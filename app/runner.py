@@ -18,8 +18,22 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from . import stealth
 from .config import AppSettings
-from .console import clear_status, dashboard, err, info, ok, rule, say, set_status, warn
+from .console import (
+    clear_status,
+    dashboard,
+    err,
+    info,
+    ok,
+    progress_count,
+    progress_reset,
+    progress_risk,
+    rule,
+    say,
+    set_status,
+    warn,
+)
 from .courses import VideoTask
 from .session_factory import build_zhs_config, new_session
 
@@ -172,6 +186,17 @@ def run_tasks(
     if not tasks:
         return summary
 
+    # 风控闸门：并发上限 + 上报间隔，撞到 -10 会自己往下压
+    gov = stealth.Governor(
+        jobs,
+        adaptive=settings.adaptive,
+        base_delay=settings.delay,
+        min_delay=min(0.3, settings.delay) if settings.delay else 0.0,
+    )
+    stealth.set_current(gov)
+    quota = stealth.DailyQuota(settings.state_dir / "daily.json", settings.max_per_day)
+    progress_reset(len(tasks), jobs=jobs)
+
     task_q: queue.Queue[VideoTask | None] = queue.Queue()
     for t in tasks:
         task_q.put(t)
@@ -181,10 +206,13 @@ def run_tasks(
     results: list[TaskOutcome] = []
     res_lock = threading.Lock()
     stop_reason = {"text": ""}
+    rest_lock = threading.Lock()
+    rest_done = 0
 
     def record(outcome: TaskOutcome) -> None:
         with res_lock:
             results.append(outcome)
+        progress_count(outcome.status, outcome.seconds)
         if on_task is not None:
             try:
                 on_task(outcome)
@@ -192,6 +220,7 @@ def run_tasks(
                 pass
 
     def worker_loop(worker_no: int) -> None:
+        nonlocal rest_done
         name = f"W{worker_no}"
         w = Worker(settings, cookies, ctx_cache)
         # 错峰启动：几个线程同时开播、同时上报心跳，最容易被判成"多窗口观看"（-10/-12）
@@ -210,6 +239,12 @@ def run_tasks(
             if task is None:
                 return
 
+            if quota.exhausted():
+                if not stop_reason["text"]:
+                    stop_reason["text"] = f"到了每日上限（{settings.max_per_day} 条），明天再说"
+                stop_event.set()
+                break
+
             if task.done and not settings.force:
                 set_status(name, label=task.name[:16], state="skip ", pct=100)
                 record(TaskOutcome(task, "skip", "已完成"))
@@ -219,9 +254,12 @@ def run_tasks(
             set_status(name, label=task.name[:16], state="play ", pct=0)
             started = time.time()
             try:
-                w.play(task)
+                with gov.slot():
+                    w.play(task)
                 elapsed = time.time() - started
                 record(TaskOutcome(task, "ok", "", elapsed))
+                gov.note_ok()
+                quota.add()
                 set_status(name, state="done ", pct=100)
                 clear_status(name)
             except Exception as exc:  # noqa: BLE001
@@ -248,17 +286,36 @@ def run_tasks(
                     record(TaskOutcome(task, "stopped", msg, elapsed))
                     stop_event.set()
                     break
+                if "-10" in msg or "多窗口" in msg:
+                    # 平台说"疑是多窗口观看"：别硬顶，压并发、拉长间隔
+                    progress_risk()
+                    gov.note_risk("multi_window")
+                    warn(f"{name} 被判多窗口观看（-10）→ 已降到 {gov.describe()}")
                 record(TaskOutcome(task, "fail", f"{kind}: {msg}", elapsed))
                 warn(f"{name} 失败：{task.name} — {kind}: {msg}")
                 continue
             finally:
-                if settings.delay:
-                    # 加点抖动：几个线程固定节奏上报，容易被风控认出是脚本
-                    time.sleep(settings.delay * random.uniform(0.85, 1.3))
+                # 两次之间歇一下，间隔带抖动（固定节奏最容易被认成脚本）
+                gov.sleep_between()
+                with rest_lock:
+                    rest_done += 1
+                    do_rest = bool(
+                        settings.rest_every
+                        and rest_done >= settings.rest_every
+                        and not stop_event.is_set()
+                        and not task_q.empty()
+                    )
+                    if do_rest:
+                        rest_done = 0
+                if do_rest:
+                    secs = stealth.rest_seconds(settings.rest_seconds)
+                    info(f"休息 {secs:.0f} 秒再继续（每 {settings.rest_every} 条一次，别太机械）")
+                    stop_event.wait(secs)
 
     started_at = time.time()
     say()
     info(f"并发线程数：{jobs}｜任务数：{len(tasks)}｜倍速：{settings.speed}｜阈值：{settings.threshold}")
+    info(f"风控：{gov.describe()}" + (f"｜每 {settings.rest_every} 条休息 {settings.rest_seconds} 秒" if settings.rest_every else ""))
     rule()
 
     threads = [
@@ -680,6 +737,16 @@ def run_daemon(
 
     while True:
         cycle += 1
+        if settings.night_off and stealth.night_blocked(
+            time.localtime().tm_hour, settings.night_from, settings.night_to
+        ):
+            info(
+                f"现在是 {settings.night_from}:00–{settings.night_to}:00，按设定不刷，"
+                f"{int(every)} 秒后再看"
+            )
+            time.sleep(every)
+            cycle -= 1
+            continue
         if max_cycles and cycle > max_cycles:
             err(f"到了 --cycles 上限（{max_cycles} 轮），还有任务没刷完")
             return 3

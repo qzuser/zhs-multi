@@ -32,6 +32,15 @@ DEFAULTS = {
         "threshold": "100",
         "max_submit": "2",
     },
+    "stealth": {
+        "adaptive": "true",
+        "rest_every": "4",
+        "rest_seconds": "60-180",
+        "night_off": "false",
+        "night_from": "0",
+        "night_to": "6",
+        "max_per_day": "0",
+    },
     "output": {
         "verbose": "false",
         "color": "true",
@@ -69,6 +78,15 @@ class AppSettings:
     homework_enable: bool = False
     homework_threshold: int = 100
     homework_max_submit: int = 2
+
+    # [stealth] 风控应对
+    adaptive: bool = True               # 撞 -10 自动压并发 / 拉长间隔
+    rest_every: int = 0                 # 每刷完几条长休息一次（0 = 不休息；config.ini 里默认给 4）
+    rest_seconds: str = "60-180"        # 长休息多久（范围）
+    night_off: bool = False             # 夜里不刷
+    night_from: int = 0
+    night_to: int = 6
+    max_per_day: int = 0                # 每天最多刷几条（0 = 不限）
 
     # [output]
     verbose: bool = False
@@ -108,6 +126,10 @@ class AppSettings:
         self.stagger = max(0.0, min(30.0, float(self.stagger)))
         self.unblock_wait = max(0, min(7200, int(self.unblock_wait)))
         self.homework_threshold = max(0, min(100, int(self.homework_threshold)))
+        self.rest_every = max(0, min(200, int(self.rest_every)))
+        self.night_from = max(0, min(23, int(self.night_from)))
+        self.night_to = max(0, min(24, int(self.night_to)))
+        self.max_per_day = max(0, int(self.max_per_day))
         self.homework_max_submit = max(0, int(self.homework_max_submit))
         self.ai_video_threshold = max(1, min(100, int(self.ai_video_threshold)))
 
@@ -155,6 +177,13 @@ def load(path: str | Path, project_dir: Path | None = None) -> AppSettings:
         homework_enable=_b(parser["homework"].get("enable", "false")),
         homework_threshold=int(parser["homework"].get("threshold", "100") or 100),
         homework_max_submit=int(parser["homework"].get("max_submit", "2") or 0),
+        adaptive=_b(parser["stealth"].get("adaptive", "true")),
+        rest_every=int(parser["stealth"].get("rest_every", "4") or 0),
+        rest_seconds=parser["stealth"].get("rest_seconds", "60-180").strip(),
+        night_off=_b(parser["stealth"].get("night_off", "false")),
+        night_from=int(parser["stealth"].get("night_from", "0") or 0),
+        night_to=int(parser["stealth"].get("night_to", "6") or 0),
+        max_per_day=int(parser["stealth"].get("max_per_day", "0") or 0),
         verbose=_b(parser["output"].get("verbose", "false")),
         color=_b(parser["output"].get("color", "true")),
         project_dir=project_dir or cfg_path.resolve().parent,

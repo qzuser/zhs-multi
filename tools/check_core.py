@@ -724,6 +724,77 @@ def test_daemon_wiring() -> None:
                 setattr(mod, name, orig)
 
 
+def test_stealth_progress() -> None:
+    """风控闸门 + 总进度：撞 -10 会不会真的降并发，进度算得对不对"""
+    print("13) 风控闸门 + 总进度")
+    import tempfile
+
+    from app import stealth as S
+    from app import console as C
+
+    # --- 总进度
+    C.progress_reset(10)
+    for _ in range(3):
+        C.progress_count("ok", 100.0)
+    line = C.progress_line()
+    check("3/10" in line, f"总进度显示 3/10（{line.split()[0:2]}）")
+    check("30.0%" in line, "百分比算对（30.0%）")
+    check("剩 ~" in line, "还有剩余时间估算")
+    C.progress_count("fail", 0.0)
+    check("失败 1" in C.progress_line(), "失败数会显示出来")
+    C.progress_count("skip", 0.0)
+    check(C.progress_done() == 4, f"完成数 = ok + skip = 4（{C.progress_done()}）")
+
+    # --- 并发闸门：撞 -10 就往下压
+    gov = S.Governor(4, adaptive=True, base_delay=0.4, cool_down=0.0)
+    check(gov.limit == 4, "初始并发 = 4")
+    gov.note_risk("multi_window")
+    check(gov.limit == 3, f"撞一次 -10 降到 3（{gov.limit}）")
+    check(gov.delay > 0.4, f"间隔跟着拉长（{gov.delay:.2f}s）")
+    gov.note_risk("multi_window")
+    gov.note_risk("multi_window")
+    gov.note_risk("multi_window")
+    check(gov.limit == 1, f"连着撞就压到最低 1（{gov.limit}）")
+    for _ in range(10):
+        gov.note_ok()
+    check(gov.limit >= 2, f"冷却后能慢慢放回去（{gov.limit}）")
+
+    # adaptive=false 时不许自作主张
+    gov2 = S.Governor(3, adaptive=False)
+    gov2.note_risk("multi_window")
+    check(gov2.limit == 3, "关掉自适应后并发不变")
+
+    # --- 日志信号识别
+    S.set_current(gov2)
+    before = gov2.risks
+    S.on_log("Multi-window detected, refreshing token: ...")
+    check(gov2.risks == before + 1, "从日志里认出 Multi-window detected")
+    S.on_log("完全无关的一行日志")
+    check(gov2.risks == before + 1, "无关日志不计数")
+    S.set_current(None)
+
+    # --- 休息时长 / 作息
+    lo, hi = S.parse_range("60-180")
+    check((lo, hi) == (60.0, 180.0), "解析 60-180")
+    check(60 <= S.rest_seconds("60-180") <= 180, "休息时长落在区间内")
+    check(S.parse_range("bad") == (60.0, 180.0), "写错了回落到默认区间")
+    check(S.night_blocked(3, 0, 6), "3 点在 0~6 点里")
+    check(not S.night_blocked(9, 0, 6), "9 点不在 0~6 点里")
+    check(S.night_blocked(23, 22, 6), "跨零点：23 点算夜间")
+    check(not S.night_blocked(12, 22, 6), "跨零点：12 点不算")
+
+    # --- 每日上限
+    with tempfile.TemporaryDirectory() as tmp:
+        q = S.DailyQuota(Path(tmp) / "daily.json", 3)
+        check(not q.exhausted(), "空账本没到上限")
+        q.add()
+        q.add()
+        q.add()
+        check(q.exhausted(), "刷到 3 条就到上限")
+        q2 = S.DailyQuota(Path(tmp) / "daily.json", 3)
+        check(q2.count == 3, f"重启后账本还记得（{q2.count}）")
+
+
 def main() -> int:
     test_spec()
     test_config()
@@ -738,6 +809,7 @@ def main() -> int:
     test_daemon()
     test_daemon_wiring()
     test_stagger()
+    test_stealth_progress()
     print()
     if FAILS:
         print(f"[!!] {len(FAILS)} 项未通过：" + "；".join(FAILS))

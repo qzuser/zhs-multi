@@ -50,6 +50,10 @@ def _setup_logging(settings) -> Path:
         encoding="utf-8",
         enqueue=True,
     )
+    # 从日志里盯风控信号（-10 多窗口 / -9 上限 / -12 验证码），撞到就自动降速
+    from . import stealth
+
+    logger.add(stealth.on_log, level="WARNING", format="{message}")
     return log_path
 
 
@@ -327,6 +331,15 @@ def cmd_status(args) -> int:
     rule("=")
     info(f"配置文件  : {settings.config_path}")
     info(f"线程/倍速 : {settings.jobs} / {settings.speed}（阈值 {settings.threshold}）")
+    from . import stealth as _stealth
+
+    _quota = _stealth.DailyQuota(settings.state_dir / "daily.json", settings.max_per_day)
+    info(
+        f"风控      : "
+        + ("自适应开" if settings.adaptive else "自适应关")
+        + (f"，每 {settings.rest_every} 条休息 {settings.rest_seconds}s" if settings.rest_every else "")
+        + f"，每日 {_quota.describe()}"
+    )
 
     cookies = load_cookies(settings.cookies_path)
     if not cookies:
