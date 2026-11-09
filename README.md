@@ -9,7 +9,37 @@
 > 许可：本项目沿用上游 `zhs` 的 **GPL-3.0**（见 [LICENSE](LICENSE)）。`zhs` 本身需要单独安装，见下方「快速开始」。
 > 只用于自己账号的学习进度管理。
 
-## 一键启动（双击就行）
+## 免安装版（对方电脑不用装 Python）
+
+```
+zhs-multi-standalone-1.0.0\
+  一键刷课.exe      <- 双击出菜单（认身边的 zhs-multi.exe，自动走免安装模式）
+  zhs-multi.exe     <- 真程序：Python 解释器 + zhs + app 全在里面（onefile，38 MB）
+  config.ini
+  使用说明.txt
+```
+
+打好包直接解压就能用，**不需要 Python、不需要 venv、不需要 pip**。顺手把它做成 zip：
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\pack\build-standalone.ps1
+```
+
+脚本干四件事：把 `tools\*.py` 摆到临时目录 → PyInstaller 打 `zhs-multi.exe` →
+csc 编 `一键刷课.exe` → 攒目录、签名、压 zip 到 `dist\zhs-multi-standalone-<版本>.zip`。
+
+几个跟源码版不一样的地方：
+
+| 项 | 源码版 | 免安装版 |
+|---|---|---|
+| 入口 | `zhs-multi.bat` / `python -m app` | `zhs-multi.exe`（`一键刷课.exe` 自动认它） |
+| 配置 / 登录态 | 项目根目录 `config.ini`、`state\` | **exe 旁边**的 `config.ini`、`state\` |
+| 易盾验证码自动点选 | `py -3.11 -m pip install playwright` 就可用 | 需要本机另装 Python + playwright；没有就走「人工点一次」 |
+| `selftest` | 全支持 | 全支持（`tools\*.py` 打进包里了） |
+
+`state\cookies.json` 在免安装版里同样是**明文登录态**，别连包发给别人；换账号删掉它重新扫码。
+
+## 一键启动（源码版，双击就行）
 
 | 入口 | 说明 |
 |---|---|

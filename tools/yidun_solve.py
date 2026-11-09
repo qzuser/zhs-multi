@@ -39,7 +39,9 @@ from PIL import Image, ImageDraw, ImageFont
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "state" / "captcha"
+# 状态目录：--state-dir / ZHS_MULTI_STATE 指定，否则就是项目里的 state/
+STATE = Path(os.environ.get("ZHS_MULTI_STATE") or (ROOT / "state"))
+OUT = STATE / "captcha"
 OUT.mkdir(parents=True, exist_ok=True)
 def _find_chrome() -> str | None:
     """本机 Chromium 路径：PLAYWRIGHT_CHROMIUM 优先，否则找 ms-playwright 里最新的那个。
@@ -340,11 +342,18 @@ def main() -> int:
     ap.add_argument("--inspect", action="store_true")
     ap.add_argument("--tries", type=int, default=4)
     ap.add_argument("--rac", default="", help="player page recruitAndCourseId")
+    ap.add_argument("--state-dir", default="", help="where cookies.json / captcha dumps live")
     ap.add_argument("--min-score", type=float, default=0.34)
     ap.add_argument("--per-attempt", type=int, default=3, help="一张图最多试几个候选")
     ap.add_argument("--url", default="", help="player page URL (overrides --rac)")
     ap.add_argument("--selftest-parse", action="store_true", help="只测提示语解析，不开浏览器")
     args = ap.parse_args()
+
+    global STATE, OUT
+    if args.state_dir:
+        STATE = Path(args.state_dir)
+        OUT = STATE / "captcha"
+        OUT.mkdir(parents=True, exist_ok=True)
 
     if args.selftest_parse:
         cases = [
@@ -369,7 +378,7 @@ def main() -> int:
 
     cookies = [
         {**c, "domain": ".zhihuishu.com", "path": "/"}
-        for c in json.loads((ROOT / "state" / "cookies.json").read_text(encoding="utf-8"))
+        for c in json.loads((STATE / "cookies.json").read_text(encoding="utf-8"))
     ]
     log: list[str] = []
 

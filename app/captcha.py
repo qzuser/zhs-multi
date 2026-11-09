@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import paths as _paths
+
 SCRIPT = "yidun_solve.py"
 
 # 找装了 playwright 的解释器。环境变量 ZHS_MULTI_PY_PLAYWRIGHT 优先，
@@ -70,7 +72,7 @@ def available() -> tuple[bool, str]:
             "    py -3.11 -m pip install playwright\n"
             "    py -3.11 -m playwright install chromium"
         )
-    script = Path(__file__).resolve().parents[1] / "tools" / SCRIPT
+    script = _paths.tool_path(SCRIPT)
     if not script.exists():
         return False, f"缺少脚本 {script}"
     return True, f"用 {py} 跑 {script.name}"
@@ -81,6 +83,7 @@ def solve(
     min_score: float = 0.6,
     quiet: bool = False,
     rac_id: str = "",
+    state_dir: str = "",
 ) -> tuple[bool, str]:
     """跑一次自动点选。返回 (是否通过, 输出)
 
@@ -92,10 +95,12 @@ def solve(
 
     py = find_python()
     assert py is not None
-    script = Path(__file__).resolve().parents[1] / "tools" / SCRIPT
+    script = _paths.tool_path(SCRIPT)
     extra = ["--tries", str(tries), "--min-score", str(min_score)]
     if rac_id:
         extra += ["--rac", rac_id]
+    if state_dir:
+        extra += ["--state-dir", str(state_dir)]
     cmd = [py, str(script), *extra]
     if py == "py":
         cmd = ["py", "-3.11", str(script), *extra]

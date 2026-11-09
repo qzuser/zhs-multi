@@ -30,8 +30,23 @@ _BAR_RE = re.compile(r"\[[#.\s]+\]\s*(\d{1,3}(?:\.\d+)?)%")
 
 # ---------------------------------------------------------------- 基础输出
 
+# 打包成 exe 之后提示语里的 "zhs-multi.bat" 就不对了，统一在这里换掉
+try:
+    from .paths import frozen as _frozen
+
+    _LAUNCH_HINT = "zhs-multi.exe" if _frozen() else "zhs-multi.bat"
+except Exception:  # noqa: BLE001
+    _LAUNCH_HINT = "zhs-multi.bat"
+
+
+def _hint(text: str) -> str:
+    if _LAUNCH_HINT != "zhs-multi.bat" and "zhs-multi.bat" in text:
+        return text.replace("zhs-multi.bat", _LAUNCH_HINT)
+    return text
+
 
 def _emit(text: str) -> None:
+    text = _hint(text)
     with _LOCK:
         if _ACTIVE:
             _EVENTS.append(text)

@@ -19,6 +19,9 @@ __pycache__/
 *.cer
 *.pfx
 *.pvk
+build/
+dist/
+*.spec
 
 # 一次性探查脚本：只在本机留档（里面有本机账号的课程 id、uuid、抓包结果）
 tools/_recon/

@@ -37,6 +37,8 @@ internal static class ZhsLauncher
     private static string pyExe;
     private static string pyPrefix;
     private static bool attached;
+    // true = 身边有打包好的 zhs-multi.exe，直接调它，不需要 Python
+    private static bool standalone;
 
     private static int Main(string[] argv)
     {
@@ -48,7 +50,9 @@ internal static class ZhsLauncher
         root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
         attached = StdinIsConsole();
 
-        if (!File.Exists(Path.Combine(root, @"app\__main__.py")))
+        standalone = FindBundled();
+
+        if (!standalone && !File.Exists(Path.Combine(root, @"app\__main__.py")))
         {
             Line("找不到 app\\__main__.py —— 这个 exe 得和 app\\ 文件夹放在一起（项目根目录）。");
             Line("现在的位置：" + root);
@@ -56,12 +60,14 @@ internal static class ZhsLauncher
             return 2;
         }
 
-        if (!FindPython())
+        if (!standalone && !FindPython())
         {
-            Line("没找到能用的 Python。期待的位置：" + Path.Combine(root, @"..\.venv-zhs\Scripts\python.exe"));
-            Line("修好后再双击。手动建环境：");
-            Line(@"  py -3 -m venv ..\.venv-zhs");
-            Line(@"  ..\.venv-zhs\Scripts\python.exe -m pip install -e ..\zhs");
+            Line("没找到能用的 Python，身边也没有打包好的 zhs-multi.exe。");
+            Line("两个办法：");
+            Line(" 1) 用免安装版：把 zhs-multi.exe 和本文件放在同一个文件夹里");
+            Line(" 2) 自己建环境：");
+            Line(@"      py -3 -m venv ..\.venv-zhs");
+            Line(@"      ..\.venv-zhs\Scripts\python.exe -m pip install -e ..\zhs");
             Pause();
             return 2;
         }
@@ -91,6 +97,33 @@ internal static class ZhsLauncher
         {
             return true;
         }
+    }
+
+    /// <summary>身边有没有打包好的 zhs-multi.exe（免安装版）</summary>
+    private static bool FindBundled()
+    {
+        string env = Environment.GetEnvironmentVariable("ZHS_MULTI_EXE");
+        if (env != null && env.Length > 0 && File.Exists(env))
+        {
+            pyExe = env;
+            pyPrefix = "";
+            return true;
+        }
+        string[] cands = new string[]
+        {
+            Path.Combine(root, "zhs-multi.exe"),
+            Path.Combine(root, @"bin\zhs-multi.exe"),
+        };
+        for (int i = 0; i < cands.Length; i++)
+        {
+            if (File.Exists(cands[i]))
+            {
+                pyExe = cands[i];
+                pyPrefix = "";
+                return true;
+            }
+        }
+        return false;
     }
 
     private static bool FindPython()
@@ -149,7 +182,7 @@ internal static class ZhsLauncher
         Line("============================================================");
         Line("  zhs-multi 一键刷课");
         Line("  项目  ：" + root);
-        Line("  解释器：" + pyExe);
+        Line(standalone ? "  解释器：内置（不需要装 Python）" : "  解释器：" + pyExe);
         Line("------------------------------------------------------------");
         Line("  [1] 开刷：没登录会自动出二维码，然后选课开刷");
         Line("  [2] 无人值守：单线程盯梢，撞验证码自动点，刷完自己停");
@@ -220,10 +253,14 @@ internal static class ZhsLauncher
 
     private static int Run(string appArgs, bool keepOpen)
     {
-        string args = pyPrefix + "-m app";
-        if (appArgs.Length > 0)
+        string args = standalone ? appArgs : (pyPrefix + "-m app");
+        if (!standalone && appArgs.Length > 0)
         {
             args += " " + appArgs;
+        }
+        else if (standalone && appArgs.Length > 0)
+        {
+            args = appArgs;
         }
 
         ProcessStartInfo psi = new ProcessStartInfo();

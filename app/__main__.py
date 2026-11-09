@@ -19,8 +19,11 @@ import json
 import sys
 from pathlib import Path
 
+from . import paths as _paths
+
 APP_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = APP_DIR.parent
+# 打包成 exe 后就是 exe 所在目录；源码运行时是项目根目录
+PROJECT_DIR = _paths.project_dir()
 
 
 # ---------------------------------------------------------------- 基础设施
@@ -215,7 +218,8 @@ def cmd_daemon(args) -> int:
         if usable:
             info("已开启自动点选验证码")
             _rac = next((getattr(e, "rac_id", "") for e in selected if getattr(e, "rac_id", "")), "")
-            solve_fn = lambda: captcha_mod.solve(tries=4, quiet=True, rac_id=_rac)[0]  # noqa: E731
+            _sd = str(settings.state_dir)
+            solve_fn = lambda: captcha_mod.solve(tries=4, quiet=True, rac_id=_rac, state_dir=_sd)[0]  # noqa: E731
         else:
             info(f"自动点选不可用，改为纯等待：{why.splitlines()[0]}")
 
@@ -269,7 +273,9 @@ def cmd_unblock(args) -> int:
             _warn(why)
         else:
             info("先试自动点掉验证码")
-            solved, _out = captcha_mod.solve(tries=args.auto_tries, rac_id=target.rac_id)
+            solved, _out = captcha_mod.solve(
+                tries=args.auto_tries, rac_id=target.rac_id, state_dir=str(settings.state_dir)
+            )
             if solved:
                 state = _probe(
                     settings, cookies, target.rac_id, pending[0].video_id, 12, quiet=True
@@ -468,7 +474,7 @@ def _run_tool_check(name: str) -> int:
 
     from .console import err, info, say
 
-    path = Path(__file__).resolve().parents[1] / "tools" / name
+    path = _paths.tool_path(name)
     if not path.exists():
         err(f"找不到自检脚本：{path}")
         return 2
@@ -556,7 +562,9 @@ def cmd_captcha(args) -> int:
             warn(f"读课程列表失败，播放页只能用电台默认课程：{exc}")
     if rac:
         info(f"播放页课程：{rac}")
-    solved, out = captcha_mod.solve(tries=args.tries, min_score=args.min_score, rac_id=rac)
+    solved, out = captcha_mod.solve(
+        tries=args.tries, min_score=args.min_score, rac_id=rac, state_dir=str(settings.state_dir)
+    )
     if solved:
         ok("验证码已通过")
         return 0
@@ -615,19 +623,21 @@ def cmd_doctor(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # 免安装版里入口叫 zhs-multi.exe，源码版里是 zhs-multi.bat
+    entry = "zhs-multi.exe" if _paths.frozen() else "zhs-multi.bat"
     p = argparse.ArgumentParser(
         prog="zhs-multi",
         description="智慧树多线程刷课工具（知到 / Hike / AI）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
-            "  zhs-multi.bat                       # 交互式：自动登录 → 选课 → 刷\n"
-            "  zhs-multi.bat login                 # 扫码登录（智慧树 APP 扫一扫）\n"
-            "  zhs-multi.bat list                  # 看课程表\n"
-            "  zhs-multi.bat run -j 8 -c 1,3 --dry-run\n"
-            "  zhs-multi.bat run -c all -s 1.8 -l 60\n"
-            "  zhs-multi.bat captcha               # 被 -12 拦住时自动点掉验证码\n"
-            "  zhs-multi.bat daemon -c 1 --solve-captcha   # 盯梢 + 自动点验证码\n"
+            f"  {entry}                       # 交互式：自动登录 → 选课 → 刷\n"
+            f"  {entry} login                 # 扫码登录（智慧树 APP 扫一扫）\n"
+            f"  {entry} list                  # 看课程表\n"
+            f"  {entry} run -j 8 -c 1,3 --dry-run\n"
+            f"  {entry} run -c all -s 1.8 -l 60\n"
+            f"  {entry} captcha               # 被 -12 拦住时自动点掉验证码\n"
+            f"  {entry} daemon -c 1 --solve-captcha   # 盯梢 + 自动点验证码\n"
         ),
     )
     p.add_argument("-c", "--config", default="", help="配置文件路径（默认项目目录 config.ini）")
