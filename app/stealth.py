@@ -226,3 +226,73 @@ class DailyQuota:
         if not self.limit:
             return "不限"
         return f"今天 {self.count}/{self.limit}"
+
+
+# ---------------------------------------------------------------- 上报载荷里的设备标识
+#
+# zhs 给的 sdsew（XOR 编码的事件串）最后一个字段是 `<账号uuid>zhs`：
+#     raw_ev[9] = self._session.uuid + "zhs"
+# 服务器解码后一眼就能按 "zhs" 后缀把这批账号归成一堆。这里把它换成每账号一份的随机标识，
+# 存在 state\device.json 里，跨次运行保持不变（中途变才会显得可疑）。
+
+DEVICE_FILE = "device.json"
+
+
+def device_tag(account: str, mode: str = "auto", state_dir: Any = None) -> str:
+    """返回要拼在 uuid 后面的标识
+
+    mode = "zhs"   保持上游原状（"zhs"）
+    mode = "auto"  每账号一份、持久化在 state/device.json 的随机 9 位
+    其它           原样当成自定义字符串
+    """
+    mode = (mode or "auto").strip()
+    if mode == "zhs":
+        return "zhs"
+    if mode and mode not in ("auto",):
+        return mode
+
+    import json
+    from pathlib import Path
+
+    try:
+        path = Path(state_dir or ".") / DEVICE_FILE
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:  # noqa: BLE001
+        return "zhs"
+    if not isinstance(data, dict):
+        data = {}
+    tag = str(data.get(account) or "")
+    if not tag:
+        tag = "".join(random.choice("0123456789abcdef") for _ in range(9))
+        data[account] = tag
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:  # noqa: BLE001,S110
+            pass
+    return tag
+
+
+def install_device_tag(mode: str = "auto", state_dir: Any = None) -> bool:
+    """把 zhs 上报事件串里的 `zhs` 后缀换掉；只打一次补丁"""
+    try:
+        import zhs.zhidao.video as _video
+    except Exception:  # noqa: BLE001
+        return False
+    # 始终包住"真正的原版"，重复安装 / 换模式都不会叠罗汉
+    original = getattr(_video, "_zhs_multi_tag_original", None) or _video.encode_ev
+    _video._zhs_multi_tag_original = original  # type: ignore[attr-defined]
+
+    def patched(data, key="zzpttjd"):  # noqa: ANN001, ANN202
+        try:
+            if isinstance(data, (list, tuple)) and data and isinstance(data[-1], str):
+                last = data[-1]
+                if last.endswith("zhs"):
+                    base = last[:-3]
+                    data = list(data[:-1]) + [base + device_tag(base, mode, state_dir)]
+        except Exception:  # noqa: BLE001
+            pass
+        return original(data, key)
+
+    _video.encode_ev = patched  # type: ignore[assignment]
+    return True

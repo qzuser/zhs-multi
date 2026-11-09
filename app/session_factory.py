@@ -35,6 +35,9 @@ def build_zhs_config(settings: AppSettings) -> AppConfig:
 
 def new_session(settings: AppSettings, cookies: list[dict[str, Any]] | None = None) -> ZhsSession:
     """新建一个独立会话（每个线程各持一个，避免共享 httpx client）"""
+    from . import stealth
+
+    stealth.install_device_tag(settings.device_tag, settings.state_dir)
     session = ZhsSession(build_zhs_config(settings))
     if cookies:
         session.cookies = list_to_cookies(cookies)

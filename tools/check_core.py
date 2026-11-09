@@ -783,6 +783,29 @@ def test_stealth_progress() -> None:
     check(S.night_blocked(23, 22, 6), "跨零点：23 点算夜间")
     check(not S.night_blocked(12, 22, 6), "跨零点：12 点不算")
 
+    # --- 上报载荷里的设备标识（别让服务器按 "zhs" 后缀聚类）
+    import zhs.crypto as _ZC
+    import zhs.zhidao.video as _ZV
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tag1 = S.device_tag("ACC1", "auto", tmp)
+        tag2 = S.device_tag("ACC1", "auto", tmp)
+        tag3 = S.device_tag("ACC2", "auto", tmp)
+        check(len(tag1) == 9 and tag1.isalnum(), f"auto 生成 9 位标识（{tag1}）")
+        check(tag1 == tag2, "同一账号两次调用拿到同一个（落在 device.json）")
+        check(tag1 != tag3, "不同账号标识不同")
+        check(S.device_tag("ACC1", "zhs", tmp) == "zhs", "mode=zhs 保持上游原样")
+        check(S.device_tag("ACC1", "win32", tmp) == "win32", "自定义标识原样返回")
+
+        ev = [1, 2, 3, 4, 5, "0", 45, 3720, "1:02:00", "ACCzhs"]
+        plain = _ZC.encode_ev(ev, "zzpttjd")
+        S.install_device_tag("auto", tmp)
+        masked = _ZV.encode_ev(ev, "zzpttjd")
+        check(masked != plain, "装补丁后上报载荷真的变了")
+        check("zhs" not in masked, "载荷里不再出现 zhs 这个工具签名")
+        S.install_device_tag("zhs", tmp)
+        check(_ZV.encode_ev(ev, "zzpttjd") == plain, "device_tag=zhs 时与上游逐字节一致")
+
     # --- 每日上限
     with tempfile.TemporaryDirectory() as tmp:
         q = S.DailyQuota(Path(tmp) / "daily.json", 3)

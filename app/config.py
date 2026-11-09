@@ -40,6 +40,7 @@ DEFAULTS = {
         "night_from": "0",
         "night_to": "6",
         "max_per_day": "0",
+        "device_tag": "auto",
     },
     "output": {
         "verbose": "false",
@@ -87,6 +88,7 @@ class AppSettings:
     night_from: int = 0
     night_to: int = 6
     max_per_day: int = 0                # 每天最多刷几条（0 = 不限）
+    device_tag: str = "auto"           # 上报里的设备标识：auto / zhs / 自定义
 
     # [output]
     verbose: bool = False
@@ -184,6 +186,7 @@ def load(path: str | Path, project_dir: Path | None = None) -> AppSettings:
         night_from=int(parser["stealth"].get("night_from", "0") or 0),
         night_to=int(parser["stealth"].get("night_to", "6") or 0),
         max_per_day=int(parser["stealth"].get("max_per_day", "0") or 0),
+        device_tag=(parser["stealth"].get("device_tag", "auto") or "auto").strip(),
         verbose=_b(parser["output"].get("verbose", "false")),
         color=_b(parser["output"].get("color", "true")),
         project_dir=project_dir or cfg_path.resolve().parent,
