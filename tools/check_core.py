@@ -777,7 +777,7 @@ def test_stealth_progress() -> None:
     lo, hi = S.parse_range("60-180")
     check((lo, hi) == (60.0, 180.0), "解析 60-180")
     check(60 <= S.rest_seconds("60-180") <= 180, "休息时长落在区间内")
-    check(S.parse_range("bad") == (60.0, 180.0), "写错了回落到默认区间")
+    check(S.parse_range("bad") == (15.0, 30.0), "写错了回落到默认区间 15-30")
     check(S.night_blocked(3, 0, 6), "3 点在 0~6 点里")
     check(not S.night_blocked(9, 0, 6), "9 点不在 0~6 点里")
     check(S.night_blocked(23, 22, 6), "跨零点：23 点算夜间")

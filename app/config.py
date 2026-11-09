@@ -34,8 +34,8 @@ DEFAULTS = {
     },
     "stealth": {
         "adaptive": "true",
-        "rest_every": "4",
-        "rest_seconds": "60-180",
+        "rest_every": "6",
+        "rest_seconds": "15-30",
         "night_off": "false",
         "night_from": "0",
         "night_to": "6",
@@ -81,8 +81,8 @@ class AppSettings:
 
     # [stealth] 风控应对
     adaptive: bool = True               # 撞 -10 自动压并发 / 拉长间隔
-    rest_every: int = 0                 # 每刷完几条长休息一次（0 = 不休息；config.ini 里默认给 4）
-    rest_seconds: str = "60-180"        # 长休息多久（范围）
+    rest_every: int = 0                 # 每刷完几条长休息一次（0 = 不休息；config.ini 里默认给 6）
+    rest_seconds: str = "15-30"         # 长休息多久（范围）
     night_off: bool = False             # 夜里不刷
     night_from: int = 0
     night_to: int = 6
@@ -178,8 +178,8 @@ def load(path: str | Path, project_dir: Path | None = None) -> AppSettings:
         homework_threshold=int(parser["homework"].get("threshold", "100") or 100),
         homework_max_submit=int(parser["homework"].get("max_submit", "2") or 0),
         adaptive=_b(parser["stealth"].get("adaptive", "true")),
-        rest_every=int(parser["stealth"].get("rest_every", "4") or 0),
-        rest_seconds=parser["stealth"].get("rest_seconds", "60-180").strip(),
+        rest_every=int(parser["stealth"].get("rest_every", "6") or 0),
+        rest_seconds=parser["stealth"].get("rest_seconds", "15-30").strip(),
         night_off=_b(parser["stealth"].get("night_off", "false")),
         night_from=int(parser["stealth"].get("night_from", "0") or 0),
         night_to=int(parser["stealth"].get("night_to", "6") or 0),

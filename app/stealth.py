@@ -150,8 +150,8 @@ class Governor:
 # ---------------------------------------------------------------- 休息 / 作息
 
 
-def parse_range(text: str, default: tuple[float, float] = (60.0, 180.0)) -> tuple[float, float]:
-    """"60-180" / "90" -> (lo, hi)"""
+def parse_range(text: str, default: tuple[float, float] = (15.0, 30.0)) -> tuple[float, float]:
+    """"15-30" / "90" -> (lo, hi)"""
     raw = str(text or "").strip()
     if not raw:
         return default

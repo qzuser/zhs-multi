@@ -291,7 +291,7 @@ max_submit = 2
 |---|---|---|
 | **自适应并发** | 撞一次 `-10` 就把并发降 1 路、间隔 ×1.6；连着撞压到 1 路；3 分钟没再撞且刷完 5 条才慢慢放回 | `adaptive = true` |
 | **抖动间隔** | 两次上报之间是 `delay × 0.85~1.30` 的随机值，不是固定秒数 | `delay` |
-| **长休息** | 每刷完 N 条强制歇 1~3 分钟，人类不会连看 20 个视频不停 | `rest_every` / `rest_seconds` |
+| **长休息** | 每刷完 N 条歇一小会儿（默认 6 条 / 15~30 秒），打断机器节奏 | `rest_every` / `rest_seconds` |
 | **夜间不刷** | 0~6 点只等不刷，别出现"凌晨三点还在上课" | `night_off` |
 | **每日上限** | 一天最多刷几条，避开 `-9 学习时长上限` | `max_per_day` |
 | **错峰启动** | 多线程不是同时开播，每个线程晚 `stagger` 秒进场 | `stagger` |
@@ -299,8 +299,8 @@ max_submit = 2
 ```ini
 [stealth]
 adaptive   = true
-rest_every = 4
-rest_seconds = 60-180
+rest_every = 6
+rest_seconds = 15-30
 night_off  = false
 max_per_day = 0     ; 想细水长流就填 30~50
 ```
