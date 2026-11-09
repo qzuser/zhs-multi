@@ -1,0 +1,31 @@
+# 运行时产物 / 登录态 / 抓包 —— 绝对不能进仓库
+state/
+logs/
+*.log
+cookies.json
+cookies.*.json
+captcha.jpg
+qrcode*.png
+qr-*.png
+
+# Python
+__pycache__/
+*.py[cod]
+.venv*/
+*.egg-info/
+
+# 本机编译 / 签名产物
+*.exe
+*.cer
+*.pfx
+*.pvk
+
+# 一次性探查脚本：只在本机留档（里面有本机账号的课程 id、uuid、抓包结果）
+tools/_recon/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,81 @@
+====================================================
+ zhs-multi  极简上手（想细看得看 README.md）
+====================================================
+
+【第 0 步】确认解释器在
+    ..\.venv-zhs\Scripts\python.exe   <- 有这个就 OK
+
+【第 1 步】双击  一键刷课.exe   （没有 exe 就双击 zhs-multi-oneclick.cmd）
+    出菜单，按数字选：
+        3   看状态（只读，10 秒不选就走这个，不会误开刷）
+        1   开刷（没登录会自动出二维码，然后选课）
+        2   无人值守（单线程盯梢 + 自动点验证码，刷完自己停）
+    菜单外面也能直接带参数：  一键刷课.exe status
+
+    要刷课就选 1 或 2，登录只有扫码一条路：
+    - 二维码文件：  state\qrcode.png
+    - 用「智慧树 APP -> 扫一扫」扫它
+    - 手机上点「确认登录」
+    - 二维码约 3 分钟过期，过期会自动换新码（同一路径，重新打开文件即可）
+
+【第 2 步】选课
+    程序列出课程：
+        1) [知到] 大学生职业生涯规划   courseId=... racId=...
+    输入：
+        1       只刷第 1 门
+        1,3     第 1 和第 3 门
+        2-4     第 2 到第 4 门
+        all     全刷（直接回车也是全刷）
+
+【第 3 步】等着
+    单行会显示每个线程在刷哪条视频、进度多少：
+        W1:play [####......] 45% 1.1 职业生涯概述 | W2:play [##........] 20% ...
+
+【常用命令】
+    无人值守一条龙     zhs-multi.bat daemon -c 1 -j 1 --solve-captcha --every 120 --hours 6
+    看课程表           zhs-multi.bat list
+    总览/还剩多少       zhs-multi.bat status
+    只演练不动手       zhs-multi.bat run -c all --dry-run
+    稳着刷（推荐）      zhs-multi.bat run -c 1 -j 1
+    快一点（会被 -10）  zhs-multi.bat run -c 1 -j 2
+    2 倍速刷第 1 门    zhs-multi.bat run -c 1 -s 2.0
+    限时 60 分钟        zhs-multi.bat run -c all -l 60
+    已完成的也重刷     zhs-multi.bat run -c 1 --force
+    浏览器 Cookie 导入  zhs-multi.bat login --cookie "JSESSIONID=...; CASTGC=...; ..."
+    验证码解除了没       zhs-multi.bat probe -c 1
+    自动点掉验证码       zhs-multi.bat captcha
+    自动点+续刷         zhs-multi.bat unblock -c 1 --auto --then-run -j 1
+    智慧课程链路自检     zhs-multi.bat selftest --ai
+    文档/命令一致性      zhs-multi.bat selftest --docs
+    全部离线自检一遍     zhs-multi.bat selftest --all
+    自检线程是否真并发 zhs-multi.bat selftest -j 4
+    环境体检           zhs-multi.bat doctor
+
+【线程数怎么选】
+    实测（同一账号、23 个视频）：
+        -j 1   0 次 -10，一直刷不被拦，一条 6~10 分钟   ← 无人值守就用这个
+        -j 2   每 12~20 秒一次 -10，靠刷新令牌续上，进度照涨
+        -j 3   7 分钟内 61 次 -10，然后升级成验证码（-12）
+    临时改：命令行 -j 1       永久改：config.ini 里 jobs = 1
+
+【出问题看这里】
+    要图形验证码，程序自己停了（-12）
+        -> 先自动点：zhs-multi.bat captcha
+        -> 点不掉再人工：浏览器打开播放页看一小段，把弹窗点掉
+        -> 一条命令全自动：zhs-multi.bat unblock -c 1 --auto --then-run -j 1
+        -> 只想检查状态：zhs-multi.bat probe -c 1（退出码 0 = 已解除）
+    提示学习时长已达上限（-9）
+        -> 平台每天/每课有上限，隔天再刷；daemon 会自己停手，不再硬打接口
+    只有扫码这一条登录路
+        -> 没有智慧树 APP：浏览器登录后 F12 复制 Cookie，zhs-multi.bat login --cookie "JSESSIONID=...; CASTGC=..."
+        -> 账号密码登录已移除，login 不接受 -u/-p/--mode
+    中断了/关窗口了
+        -> 直接重跑同一条命令，已完成的会跳过
+    日志
+        -> logs\run-YYYYMMDD.log
+    盯梢到底在干嘛
+        -> state\daemon.json 或者 zhs-multi.bat status（会显示「盯梢中：第几轮/待刷几条/正在刷」）
+
+【注意】
+    state\cookies.json 就是你的登录态，别发给别人，别传到网上
+    config.ini 里已经没有任何账号密码字段（登录统一走扫码）
