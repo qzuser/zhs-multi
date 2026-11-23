@@ -796,6 +796,10 @@ def test_stealth_progress() -> None:
         check(tag1 != tag3, "不同账号标识不同")
         check(S.device_tag("ACC1", "zhs", tmp) == "zhs", "mode=zhs 保持上游原样")
         check(S.device_tag("ACC1", "win32", tmp) == "win32", "自定义标识原样返回")
+        from app.config import AppSettings as _AS
+
+        check(_AS().device_tag == "zhs",
+              "默认 device_tag 是 zhs（auto 会让平台回 -1 参数解码发生错误）")
 
         ev = [1, 2, 3, 4, 5, "0", 45, 3720, "1:02:00", "ACCzhs"]
         plain = _ZC.encode_ev(ev, "zzpttjd")

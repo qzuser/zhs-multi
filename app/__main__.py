@@ -562,24 +562,60 @@ def cmd_captcha(args) -> int:
     info("打开播放页并尝试自动点掉验证码，最多 %d 轮" % args.tries)
     # 播放页要带课程 id：从课程列表里取第一门知到课的 racId（也可以 --rac 直接指定）
     rac = getattr(args, "rac", "") or ""
-    if not rac:
+
+    # --all：逐个课程点一遍。实测 -12 是**课程级**的，
+    # 在一门课的播放页点了，另一门照样要求验证码（2026-11-23 实测）。
+    racs: list[tuple[str, str]] = []
+    if args.all:
         try:
             from .courses import list_courses
             from .session_factory import load_cookies, new_session
 
             cookies = load_cookies(settings.cookies_path)
             if cookies:
-                entries = list_courses(new_session(settings, cookies))
-                rac = next((e.rac_id for e in entries if e.rac_id), "")
+                for e in list_courses(new_session(settings, cookies)):
+                    rid = getattr(e, "rac_id", "")
+                    if rid and getattr(e, "kind", "") == "zhidao":
+                        racs.append((rid, e.label))
+            if not racs:
+                warn("没有知到课程可点")
+                return 2
         except Exception as exc:  # noqa: BLE001
-            warn(f"读课程列表失败，播放页只能用电台默认课程：{exc}")
-    if rac:
-        info(f"播放页课程：{rac}")
-    solved, out = captcha_mod.solve(
-        tries=args.tries, min_score=args.min_score, rac_id=rac, state_dir=str(settings.state_dir)
-    )
-    if solved:
-        ok("验证码已通过")
+            err(f"读课程列表失败：{exc}")
+            return 2
+        info(f"要对 {len(racs)} 门知到课程逐门点验证码（-12 是课程级的）")
+    else:
+        if not rac:
+            try:
+                from .courses import list_courses
+                from .session_factory import load_cookies, new_session
+
+                cookies = load_cookies(settings.cookies_path)
+                if cookies:
+                    entries = list_courses(new_session(settings, cookies))
+                    rac = next((e.rac_id for e in entries if e.rac_id), "")
+            except Exception as exc:  # noqa: BLE001
+                warn(f"读课程列表失败，播放页只能用电台默认课程：{exc}")
+        racs = [(rac, "")] if rac else [("", "")]
+
+    solved_any = False
+    for idx, (one_rac, label) in enumerate(racs, 1):
+        if len(racs) > 1:
+            say()
+            info(f"[{idx}/{len(racs)}] {label or '(未命名)'}  rac={one_rac}")
+        elif one_rac:
+            info(f"播放页课程：{one_rac}")
+        solved, out = captcha_mod.solve(
+            tries=args.tries, min_score=args.min_score, rac_id=one_rac,
+            state_dir=str(settings.state_dir),
+        )
+        if solved:
+            solved_any = True
+            ok(f"验证码已通过{'（' + label + '）' if label else ''}")
+        else:
+            warn(f"这门没点过{'（' + label + '）' if label else ''}")
+
+    if solved_any:
         return 0
     warn("这一轮没点过去，可以再跑一次，或手动在浏览器里点")
     if out:
@@ -727,6 +763,8 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--min-score", type=float, default=0.6, help="识别置信度下限（默认 0.6）")
     cp.add_argument("--check", action="store_true", help="只检查环境能不能用")
     cp.add_argument("--rac", default="", help="指定播放页的课程 id（默认自动取第一门知到课）")
+    cp.add_argument("--all", action="store_true",
+                    help="对每门知到课程逐个点（-12 是课程级的，刷多门时用这个）")
     cp.set_defaults(func=cmd_captcha)
 
     dp = sub.add_parser("doctor", help="环境体检")

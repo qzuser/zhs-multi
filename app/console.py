@@ -1,92 +1,232 @@
-"""线程安全的控制台输出
+"""终端输出：一块**固定大小**的屏幕，原地重画，绝不刷屏
 
-多线程刷课时多个 worker 会同时打印进度条，直接 print 会互相覆盖。
-本模块提供：
-- Sink：接管 zhs 视频播放器模块里的 print / tree_print / wipe_line
-- Dashboard：后台刷新一行总览状态，事件行插入到状态行上方
-- say()：带锁的普通输出
+## 为什么重写
+
+旧版把「刷完一个视频」当事件行逐条打出来，23~88 个任务就是同样多行，再加状态行不停重画，
+屏幕上滚成一片。这里改成：**屏幕上永远只有固定几行**，每次更新先擦掉旧的那块再画新的。
+
+```
+┌─ 固定区域（原地刷新，行数不变）──────────────
+│ [██████████░░░░░░░░░░░░░░░░░░]  46.6%  7/15  已用 12:30  剩 ~14:20
+│   W1 play  [######··]  62.0% 1.2 自我认知
+│   W2 play  [###·····]  31.5% 2.1 生涯决策
+│   W3 play  [########] 100.0% 1.1 职业概述
+│   W4 pause [##······]  22.0% 2.3 时间管理
+│   完成 1.1 职业概述
+└──────────────────────────────────────────
+```
+
+技术上是 ANSI：`ESC[{n}A` 把光标移回上次画的第一行，`ESC[J` 清掉下面所有，
+再写新内容。Windows 10+ 的 conhost 支持；万一不支持就退化成「有进展才打一行」
+（有节流，不会刷屏）。
+
+## 约定
+
+- `dashboard()` 期间，`info/ok/warn/err` **不落到滚动历史**，只进「最近」槽位，
+  屏幕高度不变；
+- 重要的东西（报错、最终汇总）在 `dashboard()` 退出后一次性打印；
+- 非 tty（重定向到文件）时完全不画框，改为「有实质进展才打一行」。
 """
 
 from __future__ import annotations
 
+import collections
 import os
 import re
+import shutil
 import sys
 import threading
 import time
-from collections import deque
 from contextlib import contextmanager
 from typing import Any
 
-_LOCK = threading.RLock()
-_EVENTS: deque[str] = deque()
+_LOCK = threading.Lock()
+_RECENT: "collections.deque[str]" = collections.deque(maxlen=3)
 _STATUS: dict[str, dict[str, Any]] = {}
 _ACTIVE = False
 
-_PCT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)%")
-# 播放器输出的进度行形如：playing 12345 [#.......] 45.2%
-# 随机暂停时是：pause  [#.......] 33%  （这里的百分比是暂停倒计时，不是视频进度）
-_BAR_RE = re.compile(r"\[[#.\s]+\]\s*(\d{1,3}(?:\.\d+)?)%")
+# zhs 视频模块的进度条特征：`[####......] 45%` / `pause [##..] 20`
+_BAR_RE = re.compile(r"\[#*\.*\]\s*(\d{1,3}(?:\.\d+)?)\s*%")
+_PCT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
 
-# ---------------------------------------------------------------- 基础输出
+_C = {
+    "reset": "\033[0m",
+    "dim": "\033[2m",
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[36m",
+    "bold": "\033[1m",
+}
 
-# 打包成 exe 之后提示语里的 "zhs-multi.bat" 就不对了，统一在这里换掉
-try:
-    from .paths import frozen as _frozen
 
-    _LAUNCH_HINT = "zhs-multi.exe" if _frozen() else "zhs-multi.bat"
-except Exception:  # noqa: BLE001
-    _LAUNCH_HINT = "zhs-multi.bat"
+def _want_color() -> bool:
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_COLOR = _want_color()
+
+
+def _c(text: str, color: str) -> str:
+    if not _COLOR:
+        return text
+    return f"{_C.get(color, '')}{text}{_C['reset']}"
 
 
 def _hint(text: str) -> str:
-    if _LAUNCH_HINT != "zhs-multi.bat" and "zhs-multi.bat" in text:
-        return text.replace("zhs-multi.bat", _LAUNCH_HINT)
+    """打包成 exe 后，提示语里的 `zhs-multi.bat` 要换成 `zhs-multi.exe`"""
+    try:
+        from . import paths
+
+        if paths.frozen():
+            return text.replace("zhs-multi.bat", "zhs-multi.exe")
+    except Exception:  # noqa: BLE001,S110
+        pass
     return text
 
 
+# ---------------------------------------------------------------- ANSI 支持
+
+
+def _enable_vt() -> bool:
+    """Windows 上显式打开 VT 处理；已经是 tty 且能写 ANSI 才算成功"""
+    if os.name != "nt":
+        try:
+            return bool(sys.stdout.isatty())
+        except Exception:  # noqa: BLE001
+            return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        # 64 位必须声明 restype，否则 handle 被截成 int32，GetConsoleMode 直接失败
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.SetConsoleMode.restype = wintypes.BOOL
+
+        handle = kernel32.GetStdHandle(-11)          # STD_OUTPUT_HANDLE
+        mode = wintypes.DWORD()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        if not (mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+            kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+class _Screen:
+    """固定区域的原地重画
+
+    `drawn` 记着上一次画了几行，下次先把光标移回那块的第一行再整块清掉。
+    行数变了也不会留残影（`ESC[J` 清到屏幕末尾）。
+    """
+
+    def __init__(self, vt: bool) -> None:
+        self.vt = vt
+        self.drawn = 0
+
+    def redraw(self, lines: list[str]) -> None:
+        if not self.vt:
+            return
+        buf: list[str] = []
+        if self.drawn:
+            buf.append(f"\x1b[{self.drawn}A")     # 回到上次那块的第一行
+        buf.append("\r\x1b[J")                    # 清到屏幕末尾
+        for ln in lines:
+            buf.append(ln + "\x1b[K\n")           # 每行自己清一次行尾
+        if not lines:
+            buf.append("")
+        try:
+            sys.stdout.write("".join(buf))
+            sys.stdout.flush()
+        except Exception:  # noqa: BLE001,S110
+            pass
+        self.drawn = len(lines)
+
+    def finish(self) -> None:
+        """收尾：块留在屏幕上，光标落到它下面一行"""
+        if self.vt:
+            try:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            except Exception:  # noqa: BLE001,S110
+                pass
+        self.drawn = 0
+
+    def clear(self) -> None:
+        if self.vt and self.drawn:
+            try:
+                sys.stdout.write(f"\x1b[{self.drawn}A\r\x1b[J")
+                sys.stdout.flush()
+            except Exception:  # noqa: BLE001,S110
+                pass
+        self.drawn = 0
+
+
+# ---------------------------------------------------------------- 基础输出
+
+
 def _emit(text: str) -> None:
+    """普通输出。dashboard 期间只进「最近」槽，不滚屏。"""
     text = _hint(text)
     with _LOCK:
         if _ACTIVE:
-            _EVENTS.append(text)
-        else:
-            sys.stdout.write(text + "\n")
-            sys.stdout.flush()
+            _RECENT.append(text)
+            return
+    try:
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+    except Exception:  # noqa: BLE001,S110
+        pass
 
 
 def say(text: str = "") -> None:
-    """普通一行输出（带锁，dashboard 开启时插到状态行上方）"""
     _emit(text)
 
 
+def rule(char: str = "-", width: int = 66) -> None:
+    _emit(_c(char * width, "dim"))
+
+
 def info(text: str) -> None:
-    _emit(f"  {text}")
+    _emit(f"  {_c('·', 'blue')} {text}")
 
 
 def ok(text: str) -> None:
-    _emit(f"  [OK] {text}")
+    _emit(f"  {_c('[OK]', 'green')} {text}")
 
 
 def warn(text: str) -> None:
-    _emit(f"  [!!] {text}")
+    _emit(f"  {_c('[!!]', 'yellow')} {text}")
 
 
 def err(text: str) -> None:
-    _emit(f"  [ERR] {text}")
+    _emit(f"  {_c('[ERR]', 'red')} {text}")
 
 
-def rule(char: str = "-", width: int = 66) -> None:
-    _emit(char * width)
+def flash(text: str) -> None:
+    """屏幕上闪一行（不占历史），用于"刚完成一个"这种即时反馈"""
+    with _LOCK:
+        _RECENT.append(_hint(text))
 
 
-# ---------------------------------------------------------------- 工作线程状态
+# ---------------------------------------------------------------- 每线程状态
 
 
 def set_status(worker: str, **fields: Any) -> None:
     with _LOCK:
-        slot = _STATUS.setdefault(worker, {})
-        slot.update(fields)
+        _STATUS.setdefault(worker, {}).update(fields)
 
 
 def clear_status(worker: str) -> None:
@@ -95,9 +235,6 @@ def clear_status(worker: str) -> None:
 
 
 # ---------------------------------------------------------------- 总进度
-#
-# 一条总进度：刷了几条 / 一共几条 / 百分比 / 已用多久 / 按当前速度还要多久。
-# tty 下贴在状态行最前面，非 tty（重定向、别的程序调）改成每 30 秒打一行。
 
 _PROGRESS: dict[str, Any] = {
     "total": 0,
@@ -107,9 +244,9 @@ _PROGRESS: dict[str, Any] = {
     "stopped": 0,
     "started": 0.0,
     "label": "",
-    "durations": [],      # 最近若干条的耗时，用来估剩余时间
-    "risks": 0,           # 撞到风控（-10 / -12）的次数
-    "jobs": 1,            # 几路并发，估剩余时间时要用
+    "durations": [],
+    "risks": 0,
+    "jobs": 1,
 }
 
 
@@ -123,17 +260,15 @@ def progress_reset(total: int, label: str = "", jobs: int = 1) -> None:
 
 
 def progress_count(status: str, seconds: float = 0.0) -> None:
-    """记一条任务结果：ok / skip / fail / stopped"""
     with _LOCK:
         if status in _PROGRESS:
             _PROGRESS[status] += 1
         if status == "ok" and seconds > 0:
             _PROGRESS["durations"].append(float(seconds))
-            del _PROGRESS["durations"][:-20]     # 只留最近 20 条
+            del _PROGRESS["durations"][:-20]
 
 
 def progress_risk(kind: str = "") -> int:
-    """风控计数 +1，返回累计次数（runner 用它决定要不要降速）"""
     with _LOCK:
         _PROGRESS["risks"] += 1
         return int(_PROGRESS["risks"])
@@ -153,13 +288,17 @@ def _hms(seconds: float) -> str:
     seconds = max(0, int(seconds))
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
-    if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def _term_width() -> int:
+    try:
+        return shutil.get_terminal_size((110, 24)).columns
+    except Exception:  # noqa: BLE001
+        return 110
 
 
 def progress_line() -> str:
-    """总进度那一行；没有总任务时返回空串"""
     with _LOCK:
         p = dict(_PROGRESS)
         p["durations"] = list(_PROGRESS["durations"])
@@ -169,13 +308,14 @@ def progress_line() -> str:
         return ""
     done = int(p["ok"]) + int(p["skip"])
     pct = done * 100.0 / total
-    bar_len = 12
+    # 学习通刷课脚本那种形状：一条粗条 + 百分比 + 计数 + 剩余
+    width = _term_width()
+    bar_len = max(12, min(28, width - 46))
     filled = max(0, min(bar_len, int(bar_len * done / total + 0.0001)))
-    bar = "#" * filled + "." * (bar_len - filled)
+    bar = "█" * filled + "░" * (bar_len - filled)
 
     elapsed = time.time() - (p["started"] or time.time())
     left = max(0, total - done)
-    # 估剩余时间：已经刷过几条就用「实测吞吐」推，一条没有就按单条耗时摊并发
     if left <= 0:
         eta = 0.0
     elif done:
@@ -185,86 +325,111 @@ def progress_line() -> str:
     else:
         eta = 0.0
 
-    bits = [f"总进度 [{bar}] {done}/{total} {pct:5.1f}%",
-            f"已用 {_hms(elapsed)}"]
-    if left:
-        bits.append(f"剩 ~{_hms(eta)}")
-    else:
-        bits.append("全部完成")
+    bits = [f"[{bar}] {pct:5.1f}%", f"{done}/{total}", f"已用 {_hms(elapsed)}"]
+    bits.append(f"剩 ~{_hms(eta)}" if left else "全部完成")
     if p["fail"]:
         bits.append(f"失败 {p['fail']}")
     if p["stopped"]:
         bits.append(f"中止 {p['stopped']}")
     if p["risks"]:
-        bits.append(f"风控 {p['risks']} 次")
+        bits.append(f"风控 {p['risks']}")
     return "  ".join(bits)
 
 
-def _render_status() -> str:
-    """单行总览：左边总进度，右边每线程的当前进度（超宽就砍线程那段）"""
-    parts: list[str] = []
-    for worker in sorted(_STATUS):
-        slot = _STATUS[worker]
+def _worker_lines(width: int) -> list[str]:
+    with _LOCK:
+        items = [(k, dict(v)) for k, v in sorted(_STATUS.items())]
+    lines: list[str] = []
+    for worker, slot in items:
         pct = slot.get("pct")
-        label = slot.get("label", "")
-        state = slot.get("state", "")
+        label = str(slot.get("label", ""))[: max(8, width - 34)]
+        state = str(slot.get("state", ""))
         if pct is None:
-            parts.append(f"{worker}:{state or 'idle'}")
-        else:
-            value = float(pct)
-            bar_len = 8
-            filled = max(0, min(bar_len, int(bar_len * value / 100)))
-            bar = "#" * filled + "." * (bar_len - filled)
-            parts.append(f"{worker}:{state}[{bar}]{value:>5.1f}% {label}")
+            lines.append(f"  {_c(worker, 'dim')} {_c(state or 'idle', 'dim')} {label}")
+            continue
+        value = float(pct)
+        bar_len = 10
+        filled = max(0, min(bar_len, int(bar_len * value / 100)))
+        bar = "█" * filled + "·" * (bar_len - filled)
+        lines.append(f"  {_c(worker, 'blue')} {state}[{bar}]{value:>5.1f}% {label}")
+    return lines
+
+
+def _screen_lines() -> list[str]:
+    width = _term_width()
+    lines: list[str] = []
     head = progress_line()
-    body = " | ".join(parts)
-    if not head:
-        return body
-    if not body:
-        return head
-    width = 0
-    try:
-        width = _term_width()
-    except Exception:  # noqa: BLE001
-        width = 0
-    line = head + " | " + body
-    if width and len(line) > width - 1:
-        room = width - 1 - len(head) - 3
-        if room > 12:
-            line = head + " | " + body[:room]
-        else:
-            line = head
-    return line
+    if head:
+        lines.append(_c(head, "bold"))
+    lines.extend(_worker_lines(width))
+    with _LOCK:
+        recent = list(_RECENT)
+    if recent:
+        lines.append(_c("  " + recent[-1].strip()[: width - 4], "dim"))
+    return lines
 
 
-def _term_width() -> int:
-    import shutil
+def _progress_key() -> tuple:
+    """去重键：只看「实质性进展」，不看计时
 
-    return shutil.get_terminal_size((120, 24)).columns
+    进度行里的「已用 00:03」每秒都在变，如果拿它当去重键，等于每 3 秒必打一行——
+    跑两小时就是两千多行，还是刷屏。所以只认 完成数/总数/失败/风控。
+    """
+    with _LOCK:
+        return (
+            int(_PROGRESS["ok"]),
+            int(_PROGRESS["skip"]),
+            int(_PROGRESS["fail"]),
+            int(_PROGRESS["stopped"]),
+            int(_PROGRESS["risks"]),
+            int(_PROGRESS["total"]),
+        )
 
 
-# ---------------------------------------------------------------- Sink
+def _render_loop(stop: threading.Event, screen: _Screen, interval: float) -> None:
+    while not stop.is_set():
+        screen.redraw(_screen_lines())
+        stop.wait(interval)
+    # 留最后一块（用户要看到 100%），光标落到块下方，后面的汇总接着打
+    screen.redraw(_screen_lines())
+    screen.finish()
+
+
+def _ticker_loop(stop: threading.Event, interval: float) -> None:
+    """非 tty：只在**有实质进展**时打一行
+
+    重定向到文件 / 被别的程序调用时用。23 个视频就打 23 行左右，不会堆成山。
+    """
+    last = None
+    while not stop.wait(interval):
+        key = _progress_key()
+        if key == last:
+            continue
+        last = key
+        line = progress_line()
+        if line:
+            _emit(line)
+
+
+# ---------------------------------------------------------------- zhs 输出接管
 
 
 class Sink:
     """替代 zhs 视频模块里的 print / tree_print / wipe_line
 
     - 进度行（含百分比）只更新 worker 状态，不刷屏
-    - 其它输出（跳过/完成/报错）作为事件行输出
+    - 其它输出进「最近」槽，只占屏幕上固定一行
     """
 
     def __init__(self, enabled: bool = True, on_event: Any = None) -> None:
-        # enabled 仅为兼容旧调用保留：接管期间一律输出事件行
         self._enabled = enabled
         self._on_event = on_event
 
     def __call__(self, *args: Any, **kwargs: Any) -> None:
-        text = " ".join(str(a) for a in args)
-        text = text.strip()
+        text = " ".join(str(a) for a in args).strip()
         if not text:
             return
         worker = threading.current_thread().name
-        # 任何带进度条的刷新行都只更新状态，不刷屏（playing / pause / 其它）
         m = _BAR_RE.search(text)
         if m:
             head = text.split()[0].lower()
@@ -273,11 +438,7 @@ class Sink:
             return
         if "\r" in text and _PCT_RE.search(text):
             return
-        self.event(
-            text,
-            depth=kwargs.get("depth"),
-            enabled=kwargs.get("enabled", True),
-        )
+        self.event(text, depth=kwargs.get("depth"), enabled=kwargs.get("enabled", True))
 
     def event(self, text: str, indent: int = 1, depth: int | None = None,
               enabled: bool = True, **_kw: Any) -> None:
@@ -289,10 +450,10 @@ class Sink:
         if self._on_event is not None:
             self._on_event(text)
             return
-        _emit("  " * indent + text)
+        flash("  " * indent + text)
 
     def wipe(self) -> None:
-        """原 wipe_line：dashboard 模式下不做事，避免清掉别人的输出"""
+        """原 wipe_line：固定区域模式下不做事，免得擦掉别人的输出"""
         return
 
 
@@ -304,44 +465,13 @@ def parse_percent(text: str) -> int | None:
 # ---------------------------------------------------------------- Dashboard
 
 
-def _render_loop(stop: threading.Event) -> None:
-    last_len = 0
-    while not stop.is_set():
-        with _LOCK:
-            lines = list(_EVENTS)
-            _EVENTS.clear()
-            status = _render_status()
-        out: list[str] = []
-        for line in lines:
-            out.append("\r" + " " * last_len + "\r" + line)
-        if status:
-            out.append("\r" + " " * last_len + "\r" + status[: last_len + 200])
-            last_len = len(status)
-        if out:
-            sys.stdout.write("\n".join(out))
-            sys.stdout.flush()
-        time.sleep(0.35)
-    with _LOCK:
-        lines = list(_EVENTS)
-        _EVENTS.clear()
-    for line in lines:
-        sys.stdout.write("\r" + " " * (last_len + 1) + "\r" + line + "\n")
-    if last_len:
-        sys.stdout.write("\r" + " " * (last_len + 1) + "\r")
-    sys.stdout.flush()
-
-
-def _ticker_loop(stop: threading.Event, interval: float) -> None:
-    """非 tty（重定向 / 被别的程序调）时，每隔一会儿打一行总进度"""
-    while not stop.wait(interval):
-        line = progress_line()
-        if line:
-            _emit(line)
-
-
 @contextmanager
-def dashboard(enabled: bool = True):
-    """开启/关闭总览状态行，并接管 zhs 视频模块的输出"""
+def dashboard(enabled: bool = True, refresh: float = 0.25):
+    """进入「固定区域」模式，并接管 zhs 视频模块的输出
+
+    - tty + 支持 ANSI → 每 `refresh` 秒擦掉重画一块，高度固定
+    - 非 tty（重定向）→ 有实质进展才打一行
+    """
     global _ACTIVE
     import zhs.zhidao.video as zvideo
 
@@ -350,28 +480,38 @@ def dashboard(enabled: bool = True):
     saved_tree = getattr(zvideo, "tree_print", None)
     saved_wipe = getattr(zvideo, "wipe_line", None)
 
-    use_dash = enabled and (sys.stdout.isatty() or os.environ.get("ZHS_MULTI_DASH") == "1")
     stop = threading.Event()
     renderer: threading.Thread | None = None
     ticker: threading.Thread | None = None
+    screen: _Screen | None = None
+
+    try:
+        is_tty = bool(sys.stdout.isatty())
+    except Exception:  # noqa: BLE001
+        is_tty = False
+    vt = (is_tty or os.environ.get("ZHS_MULTI_DASH") == "1") and enabled and _enable_vt()
 
     # 接管
     zvideo.print = sink  # type: ignore[attr-defined]
     zvideo.tree_print = sink.event  # type: ignore[attr-defined]
     zvideo.wipe_line = sink.wipe  # type: ignore[attr-defined]
 
-    if use_dash:
+    if vt:
         _ACTIVE = True
-        renderer = threading.Thread(target=_render_loop, args=(stop,), name="dash", daemon=True)
+        screen = _Screen(True)
+        renderer = threading.Thread(
+            target=_render_loop, args=(stop, screen, max(0.1, float(refresh))),
+            name="screen", daemon=True,
+        )
         renderer.start()
     elif enabled:
-        # 没法原地刷新就定时打一行，照样看得见进度
+        _ACTIVE = True
         try:
-            every = float(os.environ.get("ZHS_MULTI_PROGRESS_EVERY", "30") or 30)
+            every = float(os.environ.get("ZHS_MULTI_PROGRESS_EVERY", "3") or 3)
         except ValueError:
-            every = 30.0
+            every = 3.0
         ticker = threading.Thread(
-            target=_ticker_loop, args=(stop, max(5.0, every)), name="progress", daemon=True
+            target=_ticker_loop, args=(stop, max(1.0, every)), name="progress", daemon=True,
         )
         ticker.start()
 
@@ -380,16 +520,18 @@ def dashboard(enabled: bool = True):
     finally:
         stop.set()
         if renderer is not None:
-            renderer.join(timeout=2)
+            renderer.join(timeout=3)
         if ticker is not None:
-            ticker.join(timeout=2)
-            line = progress_line()
-            if line:
-                say(line)
+            ticker.join(timeout=3)
         _ACTIVE = False
         with _LOCK:
+            pending = list(_RECENT)
+            _RECENT.clear()
             _STATUS.clear()
-            _EVENTS.clear()
+        if pending and renderer is None:
+            for text in pending[-6:]:
+                _emit(text)
+
         # 还原（避免影响后续顺序执行）
         # 原来不存在的属性要删掉，否则会把我们的 Sink 永久留在模块上
         def _restore(name: str, saved: Any) -> None:

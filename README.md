@@ -339,8 +339,9 @@ device_tag  = auto     ; zhs 原版的工具签名 → 每账号随机一份；�
 平台风控触发后会回 `-12`，播放页弹出**网易易盾点选验证码**：图上散布若干彩色字母，提示语像
 `请点击绿色小写u`、`请点击数字5朝向一样的大写H`。这一关在前端完成校验，接口层绕不过，必须真点一次。
 
-```
+```bat
 zhs-multi.bat captcha              # 起真实浏览器，识别并点中目标字符，最多 4 轮
+zhs-multi.bat captcha --all        # 每门知到课程逐个点（-12 是课程级的，刷多门必须用它）
 zhs-multi.bat captcha --check      # 只体检：能不能找到装了 playwright 的 Python
 zhs-multi.bat probe -c 1           # 点完确认 -12 解除没（退出码 0 = 已解除）
 ```
