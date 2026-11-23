@@ -46,7 +46,8 @@ _STATUS: dict[str, dict[str, Any]] = {}
 _ACTIVE = False
 
 # zhs 视频模块的进度条特征：`[####......] 45%` / `pause [##..] 20`
-_BAR_RE = re.compile(r"\[#*\.*\]\s*(\d{1,3}(?:\.\d+)?)\s*%")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_BAR_RE = re.compile(r"\[[#\.\s]*\]\s*(\d{1,3}(?:\.\d+)?)\s*%")
 _PCT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
 
 _C = {
@@ -236,6 +237,64 @@ def clear_status(worker: str) -> None:
 
 # ---------------------------------------------------------------- 总进度
 
+# 课程级统计：[{"label": 课程名, "total": 总数, "done": 已完成}]
+_COURSES: list[dict[str, Any]] = []
+
+
+def courses_reset(items: list[tuple[str, int]]) -> None:
+    """按课程分组登记总数（顺序保持传入顺序）"""
+    with _LOCK:
+        _COURSES.clear()
+        for label, total in items:
+            _COURSES.append({"label": label, "total": int(total), "done": 0})
+
+
+def course_done(label: str) -> None:
+    """某门课完成一个（找不到就忽略）"""
+    if not label:
+        return
+    with _LOCK:
+        for c in _COURSES:
+            if c["label"] == label:
+                c["done"] += 1
+                return
+
+
+def course_line_of(label: str) -> str:
+    """某门课的 "已完成/总数"，给完成提示用（例如 `4/32`）"""
+    with _LOCK:
+        for c in _COURSES:
+            if c["label"] == label:
+                return f"{c['done']}/{c['total']}"
+    return "?"
+
+
+def courses_line(width: int = 0) -> str:
+    """一行显示每门课的整体进度，正在刷的那门用 > 标出来"""
+    def _short(label: str) -> str:
+        # 去掉「[知到] 」这种前缀，省宽度
+        core = re.sub(r"^\[[^\]]*\]\s*", "", label)
+        return core if len(core) <= 10 else core[:9] + "…"
+
+    with _LOCK:
+        items = [dict(c) for c in _COURSES]
+        active = {_short(str(v.get("course", ""))) for v in _STATUS.values()}
+    if not items:
+        return ""
+    limit = (width or _term_width()) - 2
+    parts: list[str] = []
+    for c in items:
+        short = _short(str(c["label"]))
+        done, total = int(c["done"]), int(c["total"])
+        mark = ">" if short in active else ""
+        seg = f"{mark}{short} {done}/{total}"
+        parts.append(seg if done < total else f"{mark}{short} [OK]")
+    line = " · ".join(parts)
+    if len(line) > limit:
+        line = line[: max(10, limit - 1)] + "…"
+    return line
+
+
 _PROGRESS: dict[str, Any] = {
     "total": 0,
     "ok": 0,
@@ -351,7 +410,16 @@ def _worker_lines(width: int) -> list[str]:
         bar_len = 10
         filled = max(0, min(bar_len, int(bar_len * value / 100)))
         bar = "█" * filled + "·" * (bar_len - filled)
-        lines.append(f"  {_c(worker, 'blue')} {state}[{bar}]{value:>5.1f}% {label}")
+        # 当前这条视频的秒数进度（task 的 video_sec × 播放百分比）
+        extra = ""
+        total_sec = slot.get("total")
+        if total_sec:
+            try:
+                cur = float(total_sec) * value / 100.0
+                extra = f"  {_c(f'{cur:.0f}s/{float(total_sec):.0f}s', 'dim')}"
+            except (TypeError, ValueError):
+                extra = ""
+        lines.append(f"  {_c(worker, 'blue')} {state}[{bar}]{value:>5.1f}% {label}{extra}")
     return lines
 
 
@@ -361,6 +429,9 @@ def _screen_lines() -> list[str]:
     head = progress_line()
     if head:
         lines.append(_c(head, "bold"))
+    cline = courses_line(width)
+    if cline:
+        lines.append(_c("  " + cline, "blue"))
     lines.extend(_worker_lines(width))
     with _LOCK:
         recent = list(_RECENT)
@@ -425,18 +496,45 @@ class Sink:
         self._enabled = enabled
         self._on_event = on_event
 
+    def _worker_name(self) -> str:
+        """线程名 → 状态行的键
+
+        runner 的线程叫 `pool_0`/`pool_1`，而我们状态行用的是 `W1`/`W2`。
+        不映射的话同一条视频会出两行（一行 W1、一行 pool_0）。
+        """
+        raw = threading.current_thread().name
+        m = re.match(r"^pool_(\d+)$", raw)
+        if m:
+            return f"W{int(m.group(1)) + 1}"
+        if raw.startswith("MainThread"):
+            # 主线程里刷进度条时归到已存在的第一个 worker，别凭空多一行
+            with _LOCK:
+                if _STATUS:
+                    return sorted(_STATUS)[0]
+            return "W1"
+        return raw
+
     def __call__(self, *args: Any, **kwargs: Any) -> None:
         text = " ".join(str(a) for a in args).strip()
         if not text:
             return
-        worker = threading.current_thread().name
-        m = _BAR_RE.search(text)
+        # 先把颜色码剥掉：zhs 的 progress_bar() 返回的是
+        #   [<青色####><暗色    >] <白色78.3%>
+        # 不剥的话正则匹配不到方括号，pct 永远不更新。
+        plain = _ANSI_RE.sub("", text)
+        worker = self._worker_name()
+        m = _BAR_RE.search(plain)
         if m:
-            head = text.split()[0].lower()
-            state = "pause" if head.startswith("pause") else "play "
+            head = plain.split()[0].lower() if plain.split() else ""
+            if head.startswith("pause"):
+                state = "pause"
+            elif head.startswith("answering"):
+                state = "answr"
+            else:
+                state = "play "
             set_status(worker, pct=float(m.group(1)), state=state)
             return
-        if "\r" in text and _PCT_RE.search(text):
+        if "\r" in text and _PCT_RE.search(plain):
             return
         self.event(text, depth=kwargs.get("depth"), enabled=kwargs.get("enabled", True))
 
@@ -492,6 +590,15 @@ def dashboard(enabled: bool = True, refresh: float = 0.25):
     vt = (is_tty or os.environ.get("ZHS_MULTI_DASH") == "1") and enabled and _enable_vt()
 
     # 接管
+    # 注意：zhs 的 _print_with_progress / _main_loop 里刷进度条用的是**内置 print**
+    # （`print(f"\r{line}", end="")`），不是 zhs.zhidao.video.print。
+    # 只替换模块属性时那条进度条照样直接写到终端，把上面画的固定区域挤掉——
+    # 表现就是"只有最下面一条进度条在动，别的都看不见"。
+    # 所以这里必须临时接管 builtins.print。
+    import builtins
+
+    saved_builtin_print = builtins.print
+    builtins.print = sink  # type: ignore[assignment]
     zvideo.print = sink  # type: ignore[attr-defined]
     zvideo.tree_print = sink.event  # type: ignore[attr-defined]
     zvideo.wipe_line = sink.wipe  # type: ignore[attr-defined]
@@ -531,6 +638,12 @@ def dashboard(enabled: bool = True, refresh: float = 0.25):
         if pending and renderer is None:
             for text in pending[-6:]:
                 _emit(text)
+
+        # 先把内置 print 还回去，否则后面所有输出都会进 Sink
+        try:
+            builtins.print = saved_builtin_print  # type: ignore[assignment]
+        except Exception:  # noqa: BLE001,S110
+            pass
 
         # 还原（避免影响后续顺序执行）
         # 原来不存在的属性要删掉，否则会把我们的 Sink 永久留在模块上

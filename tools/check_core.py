@@ -76,7 +76,7 @@ def test_config() -> None:
         )
         s = load(p, project_dir=d)
         check(s.jobs == 32, f"jobs 99→32（{s.jobs}）")
-        check(s.speed == 2.0, f"speed 9→2.0（{s.speed}）")
+        check(s.speed == 9.0, f"speed 9 保留（上限已放到 100，{s.speed}）")
         check(s.threshold == 1.2, f"threshold 9→1.2（{s.threshold}）")
         check(s.delay == 30.0, f"delay 999→30（{s.delay}）")
         check(s.unblock_wait == 7200, f"unblock_wait 99999→7200（{s.unblock_wait}）")

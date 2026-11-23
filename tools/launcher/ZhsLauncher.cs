@@ -78,12 +78,20 @@ internal static class ZhsLauncher
         }
 
         Banner();
-        string action = Menu();
-        if (action == null)
+        while (true)
         {
-            return 0;
+            string action = Menu();
+            if (action == null)
+            {
+                return 0;
+            }
+            if (action.Length > 0)
+            {
+                Run(action, true);
+            }
+            Line("");
+            Line("  —— 回到菜单 ——");
         }
-        return Run(action, true);
     }
 
     private static bool StdinIsConsole()
@@ -191,6 +199,7 @@ internal static class ZhsLauncher
         Line("  [5] 环境体检（依赖、网络、登录态）");
         Line("  [6] 只演练不动手（列出要刷的，不改任何进度）");
         Line("  [7] 被验证码拦住 → 自动点掉");
+        Line("  [8] 设置：改倍速 / 线程数（写进 config.ini，立刻生效于下次开刷）");
         Line("  [0] 退出");
         Line("------------------------------------------------------------");
         Line("  也是可以直接带参数的：一键刷课.exe run -c 1 -j 1");
@@ -202,6 +211,10 @@ internal static class ZhsLauncher
         Line("");
         Console.Write("  选一个（10 秒不选就走 3 = 只看状态）：");
         char pick = ReadKeyWithin(10);
+        if (pick == (char)27)
+        {
+            return null;            // stdin 关了 → 退出
+        }
         Line(pick == '\0' ? "3" : pick.ToString());
 
         switch (pick)
@@ -209,7 +222,15 @@ internal static class ZhsLauncher
             case '0':
                 return null;
             case '1':
-                return "";
+                // 先列课程，让用户自己选——之前这里返回空串，
+                // python 那边 stdin 不是 tty 就"默认全选"，一按就全刷了
+                Run("list", false);
+                Line("");
+                Console.Write("  要刷哪几门？（1 / 1,3 / 2-4 / all，直接回车=全部）：");
+                string sel = "";
+                try { sel = (Console.ReadLine() ?? "").Trim(); } catch { }
+                if (sel.Length == 0) sel = "all";
+                return "run -c " + sel;
             case '2':
                 return "daemon -c 1 -j 1 --solve-captcha --every 120 --hours 6";
             case '4':
@@ -220,9 +241,74 @@ internal static class ZhsLauncher
                 return "run -c all --dry-run";
             case '7':
                 return "captcha";
+            case '8':
+                return Settings();
             default:
                 return "status";
         }
+    }
+
+    /// 读 config.ini 里某个键的值（按 section 定位，找不到返回空串）
+    private static string IniGet(string section, string key)
+    {
+        try
+        {
+            string path = Path.Combine(root, "config.ini");
+            if (!File.Exists(path)) return "";
+            string cur = "";
+            foreach (string line in File.ReadAllLines(path, Encoding.UTF8))
+            {
+                string s = line.Trim();
+                if (s.StartsWith("[") && s.EndsWith("]"))
+                {
+                    cur = s.Substring(1, s.Length - 2).Trim().ToLowerInvariant();
+                    continue;
+                }
+                if (cur != section.ToLowerInvariant()) continue;
+                if (s.StartsWith(";") || s.IndexOf('=') < 0) continue;
+                string k = s.Split('=')[0].Trim();
+                if (k == key)
+                {
+                    return s.Split(new char[] { '=' }, 2)[1].Trim();
+                }
+            }
+        }
+        catch { }
+        return "";
+    }
+
+    /// [8] 设置：显示当前值 → 问新值 → 写回 config.ini
+    private static string Settings()
+    {
+        Line("");
+        Line("============================================================");
+        Line("  当前设置（config.ini）");
+        Line("------------------------------------------------------------");
+        Line("    倍速      speed        = " + IniGet("common", "speed") + "   （1 秒真实时间推进几秒视频，0.1~100）");
+        Line("    线程数    jobs         = " + IniGet("common", "jobs") + "   （知到建议 1，多了会撞验证码）");
+        Line("    完成阈值  threshold    = " + IniGet("common", "threshold") + "   （0.91 = 播到 91% 就算完成）");
+        Line("    每几条休息 rest_every  = " + IniGet("stealth", "rest_every"));
+        Line("    休息时长  rest_seconds = " + IniGet("stealth", "rest_seconds") + " 秒");
+        Line("============================================================");
+
+        Console.Write("  新倍速（0.1 ~ 100，直接回车 = 不改）：");
+        string sp = "";
+        try { sp = (Console.ReadLine() ?? "").Trim(); } catch { }
+        if (sp.Length > 0) Run("set speed " + sp, false);
+
+        Console.Write("  新线程数（1 ~ 8，直接回车 = 不改）：");
+        string jb = "";
+        try { jb = (Console.ReadLine() ?? "").Trim(); } catch { }
+        if (jb.Length > 0) Run("set jobs " + jb, false);
+
+        Console.Write("  每刷几条休息一次（0 = 不休息，回车 = 不改）：");
+        string re = "";
+        try { re = (Console.ReadLine() ?? "").Trim(); } catch { }
+        if (re.Length > 0) Run("set rest_every " + re, false);
+
+        Line("");
+        Line("  改完了。下次 [1] 开刷就用新值（当前文件：config.ini）");
+        return "";
     }
 
     private static char ReadKeyWithin(int seconds)
@@ -230,7 +316,13 @@ internal static class ZhsLauncher
         if (!attached)
         {
             string line = Console.ReadLine();
-            if (string.IsNullOrEmpty(line))
+            if (line == null)
+            {
+                // stdin 已经关了（管道喂完 / 被重定向）：直接退出。
+                // 以前这里返回 '\0'，Main 会当成"超时走默认"，于是无限刷 status。
+                return (char)27;
+            }
+            if (line.Trim().Length == 0)
             {
                 return '\0';
             }

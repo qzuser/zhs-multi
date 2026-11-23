@@ -121,7 +121,9 @@ class AppSettings:
     # ------------------------------------------------------------ 校验
     def normalize(self) -> None:
         self.jobs = max(1, min(32, int(self.jobs)))
-        self.speed = max(1.0, min(2.0, float(self.speed)))
+        # 上限放到 8.0：知到的 speed 是「1 秒真实时间推进几秒视频」，
+        # 平台那边只校验进度增量与总时长，翻倍先试试看（4.0 起可能撞 -8 时长下降）
+        self.speed = max(0.1, min(100.0, float(self.speed)))
         self.threshold = max(0.1, min(1.2, float(self.threshold)))
         self.limit = max(0, int(self.limit))
         self.delay = max(0.0, min(30.0, float(self.delay)))

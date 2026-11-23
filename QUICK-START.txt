@@ -79,3 +79,5 @@
 【注意】
     state\cookies.json 就是你的登录态，别发给别人，别传到网上
     config.ini 里已经没有任何账号密码字段（登录统一走扫码）
+
+zhs-multi.bat set speed 4.0        改倍速（也能改 jobs / threshold / rest_every）

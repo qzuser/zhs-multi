@@ -376,3 +376,5 @@ py -3.11 -m playwright install chromium
 ## 安全提醒
 
 `state\cookies.json` 等价于你的登录态，`config.ini` 里可能存着密码，**不要**发给别人或传到公开仓库。
+
+zhs-multi.bat set speed 4.0        改倍速（jobs / threshold 也能改）

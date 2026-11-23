@@ -302,8 +302,12 @@ def select_courses(entries: list[CourseEntry], spec: str = "") -> list[CourseEnt
 
     if not spec:
         if not sys.stdin.isatty():
-            warn("未指定课程且当前不可交互，默认全选")
-            return [e for e in entries if e.brushable]
+            # 以前这里会「默认全选」——从 exe 启动时 stdin 不是 tty，
+            # 结果是一按开刷就把所有课全刷了，用户根本没机会选。
+            err("没有指定要刷哪几门课程")
+            info("用 -c 指定：zhs-multi run -c 1,3   或者  -c all")
+            info("也可以双击 一键刷课.exe 选 [1]，会先列课程再让你选")
+            return []
         render_courses(entries)
         info("输入序号：如 1  或  1,3  或  2-4  或  all（回车 = 全选）")
         try:

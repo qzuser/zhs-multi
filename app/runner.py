@@ -22,6 +22,8 @@ from . import stealth
 from .config import AppSettings
 from .console import (
     clear_status,
+    course_done,
+    courses_reset,
     dashboard,
     err,
     info,
@@ -196,6 +198,16 @@ def run_tasks(
     stealth.set_current(gov)
     quota = stealth.DailyQuota(settings.state_dir / "daily.json", settings.max_per_day)
     progress_reset(len(tasks), jobs=jobs)
+    # 课程级统计：屏幕上单独一行显示每门课刷到第几个
+    _order: list[str] = []
+    _count: dict[str, int] = {}
+    for _t in tasks:
+        _k = getattr(_t, "course_label", "") or "未命名"
+        if _k not in _count:
+            _order.append(_k)
+            _count[_k] = 0
+        _count[_k] += 1
+    courses_reset([(k, _count[k]) for k in _order])
 
     task_q: queue.Queue[VideoTask | None] = queue.Queue()
     for t in tasks:
@@ -213,6 +225,8 @@ def run_tasks(
         with res_lock:
             results.append(outcome)
         progress_count(outcome.status, outcome.seconds)
+        if outcome.status in ("ok", "skip"):
+            course_done(getattr(outcome.task, "course_label", "") or "")
         if on_task is not None:
             try:
                 on_task(outcome)
@@ -245,13 +259,24 @@ def run_tasks(
                 stop_event.set()
                 break
 
+            # 拿这条视频的总时长（给状态行算「当前秒/总秒」）
+            _sec = 0.0
+            try:
+                _ctx = (ctx_cache or {}).get(task.rac_id)
+                _v = getattr(_ctx, "videos", {}).get(task.video_id) if _ctx else None
+                _sec = float(getattr(_v, "video_sec", 0) or 0)
+            except Exception:  # noqa: BLE001,S110
+                _sec = 0.0
+
             if task.done and not settings.force:
-                set_status(name, label=task.name[:16], state="skip ", pct=100)
+                set_status(name, label=task.name[:16], state="skip ", pct=100,
+                           course=task.course_label, total=_sec)
                 record(TaskOutcome(task, "skip", "已完成"))
                 clear_status(name)
                 continue
 
-            set_status(name, label=task.name[:16], state="play ", pct=0)
+            set_status(name, label=task.name[:16], state="play ", pct=0,
+                       course=task.course_label, total=_sec)
             started = time.time()
             try:
                 with gov.slot():
@@ -260,6 +285,12 @@ def run_tasks(
                 record(TaskOutcome(task, "ok", "", elapsed))
                 gov.note_ok()
                 quota.add()
+                try:
+                    from .console import course_line_of, flash
+
+                    flash(f"✓ 已提交 {course_line_of(task.course_label)} · {task.name[:22]}")
+                except Exception:  # noqa: BLE001,S110
+                    pass
                 set_status(name, state="done ", pct=100)
                 clear_status(name)
             except Exception as exc:  # noqa: BLE001
@@ -342,7 +373,8 @@ def run_tasks(
         for task in retry_tasks:
             if stop_event.is_set():
                 break
-            set_status("W1", label=task.name[:16], state="retry", pct=0)
+            set_status("W1", label=task.name[:16], state="retry", pct=0,
+                       course=task.course_label)
             started = time.time()
             try:
                 rw.play(task)
@@ -398,6 +430,7 @@ def run_courses(
     all_tasks: list[Any] = []
     ctx_cache: dict[str, Any] = {}
     polymas_entries: list[Any] = []
+    hike_entries: list[Any] = []
     for entry in selected:
         if getattr(entry, "kind", "") == "polymas":
             polymas_entries.append(entry)
@@ -416,8 +449,13 @@ def run_courses(
             )
             all_tasks.extend(ai_tasks)
             continue
+        if entry.kind == "hike":
+            # Hike 的播放器是 play_course(串行遍历整棵树)，塞不进按视频并发的池子，
+            # 所以单独排队、在知到/AI 之后串行刷。
+            hike_entries.append(entry)
+            continue
         if entry.kind != "zhidao":
-            warn(f"「{entry.label}」暂不支持并发播放，可用原 zhs play -c 处理")
+            warn(f"「{entry.label}」暂时刷不了（{getattr(entry, 'unsupported', '') or '未知原因'}）")
             continue
         info(f"展开课程：{entry.label} …")
         try:
@@ -432,7 +470,7 @@ def run_courses(
         info(f"  {entry.label}：{len(tasks)} 个视频，已完成 {sum(1 for t in tasks if t.done)} 个")
         all_tasks.extend(tasks)
 
-    if not all_tasks and not polymas_entries:
+    if not all_tasks and not polymas_entries and not hike_entries:
         err("没有可执行的视频任务")
         return 2
 
@@ -467,6 +505,10 @@ def run_courses(
                 uuid=str(getattr(session, "uuid", "") or ""),
                 dry_run=True,
             )
+        if hike_entries:
+            say()
+            for e in hike_entries:
+                info(f"[Hike] {e.name}：串行整门刷（不进并发池）")
         say()
         ok("dry-run：只列任务，不请求平台，不改变任何进度")
         return 0
@@ -488,7 +530,9 @@ def run_courses(
         poly_stats = {}
 
     summary: RunSummary | None = None
-    if not all_tasks:
+    if not all_tasks and hike_entries:
+        pass                      # 只剩 Hike，下面串行刷
+    elif not all_tasks:
         ok("AI 智课已处理完")
     elif not pending:
         ok("全部任务已完成，无需处理")
@@ -530,6 +574,9 @@ def run_courses(
             err("验证码没解除，本轮结束")
             return 3
 
+    if hike_entries:
+        _run_hike(settings, session, hike_entries)
+
     if with_homework:
         _run_homework(settings, session, selected)
 
@@ -541,6 +588,99 @@ def run_courses(
     if poly_stats.get("part") or poly_stats.get("fail"):
         return 3
     return 0
+
+
+def _hike_leaves(nodes, depth: int = 0):
+    """把 Hike 资源树摊平成叶子列表"""
+    out = []
+    for n in nodes:
+        kids = getattr(n, "child_list", None) or []
+        if kids:
+            out.extend(_hike_leaves(kids, depth + 1))
+        else:
+            out.append(n)
+    return out
+
+
+def _run_hike(settings: AppSettings, session: Any, entries: list[Any]) -> None:
+    """Hike 课程：整门串行刷
+
+    两个坑（2026-11-23 实测）：
+    1. 平台接口不再返回 code 字段，zhs 原来的 `code==200` 判断会把整门课判死
+       → 用 hike_patch 换掉 _hike_query；
+    2. 资源树的叶子节点**不给 fileId/fileName**，而 HikeVideoPlayer._traverse
+       对 data_type 不是 3 的节点要求 fileId 非空，于是全部"跳过"
+       → 这里自己遍历，用 `node.id` 兜底当 fileId（实测 stuViewFile 认它）。
+    """
+    from zhs.hike.video import HikeVideoPlayer
+
+    from . import hike_patch
+
+    if hike_patch.install():
+        info("Hike 兼容补丁已启用（新接口没有 code 字段 + 叶子没有 fileId）")
+    else:
+        warn("Hike 兼容补丁没装上，可能还是刷不了")
+
+    say()
+    rule()
+    info(f"Hike 课程 {len(entries)} 门，串行处理（这类课不支持并发）")
+
+    for entry in entries:
+        info(f"展开 Hike 课程：{entry.label} …")
+        try:
+            root = hike_patch.tree(session, entry.course_id)
+        except Exception as exc:  # noqa: BLE001
+            err(f"  {entry.label}：读资源树失败 — {type(exc).__name__}: {str(exc)[:100]}")
+            continue
+        if not root:
+            warn(f"  {entry.label}：没读到资源树")
+            continue
+
+        leaves = _hike_leaves(root)
+        done_before = sum(
+            1 for n in leaves
+            if (n.total_time or 0) > 0
+            and (n.study_time or 0) >= (n.total_time or 0) * settings.threshold
+        )
+        info(f"  {entry.label}：{len(root)} 个章节 / {len(leaves)} 个资源，"
+             f"已完成 {done_before} 个")
+
+        player = HikeVideoPlayer(
+            session,
+            speed=settings.speed,
+            end_threshold=settings.threshold,
+            time_limit=0,
+        )
+
+        ok_n = skip_n = fail_n = 0
+        for idx, node in enumerate(leaves, 1):
+            tt = node.total_time or 0
+            st = node.study_time or 0
+            fid = node.file_id or node.id
+            label = (node.name or str(fid))[:34]
+
+            if tt > 0 and st >= tt * settings.threshold:
+                skip_n += 1
+                continue
+            try:
+                if node.data_type == 3:
+                    # 视频：按秒播，再上报学习时长
+                    player.play_video(entry.course_id, fid, st)
+                else:
+                    # 图片 / 文档 / 任务卡：标记已查看即可
+                    player.play_file(entry.course_id, fid)
+                ok_n += 1
+                if idx % 5 == 0 or idx == len(leaves):
+                    info(f"    [{idx}/{len(leaves)}] {label}")
+            except Exception as exc:  # noqa: BLE001
+                kind = type(exc).__name__
+                if kind in ("CaptchaRequired", "TimeLimitExceeded"):
+                    err(f"  {entry.label}：被平台拦住（{kind}），这门先停")
+                    break
+                fail_n += 1
+                warn(f"    [{idx}/{len(leaves)}] {label} 失败 — {kind}: {str(exc)[:80]}")
+
+        ok(f"  {entry.label}：本轮到过 {ok_n} 个（跳过 {skip_n}｜失败 {fail_n}）")
 
 
 def save_run_report(settings: AppSettings, summary: RunSummary) -> Path:

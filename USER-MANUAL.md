@@ -705,3 +705,5 @@ zhs-multi.bat status               # 显示 66 个资源、待刷多少、平台
 - `state\cookies.json` 等价于登录态；`config.ini` 可能存明文密码
 - 这两样别外发、别提交到 git、别扔网盘
 - 想立即失效：网页端退出登录，或删掉 `state\cookies.json`
+
+zhs-multi.bat set speed 4.0        改倍速（也能改 jobs / threshold / rest_every，写回 config.ini 且保留注释）

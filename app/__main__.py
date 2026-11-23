@@ -152,6 +152,93 @@ def cmd_list(args) -> int:
     return 0
 
 
+# set 能改的键 → (所在 section, 下限, 上限)
+SETTABLE = {
+    "speed": ("common", 0.1, 100.0),
+    "jobs": ("common", 1, 32),
+    "threshold": ("common", 0.1, 1.2),
+    "delay": ("common", 0.0, 8.0),
+    "stagger": ("common", 0.0, 60.0),
+    "limit": ("common", 0, 100000),
+    "rest_every": ("stealth", 0, 200),
+    "adaptive": ("stealth", None, None),
+    "night_off": ("stealth", None, None),
+    "max_per_day": ("stealth", 0, 10000),
+    "device_tag": ("stealth", None, None),
+}
+
+
+def cmd_set(args) -> int:
+    """改 config.ini 里的一项（逐行替换，注释和别的项都原样保留）
+
+        zhs-multi set speed 4.0
+        zhs-multi set jobs 1
+        zhs-multi set rest_every 10
+    """
+    from .console import err, info, ok
+
+    key = (args.key or "").strip()
+    val = (args.value or "").strip()
+    if key not in SETTABLE:
+        err(f"不支持改 {key or '(空)'}；能改的：" + "、".join(sorted(SETTABLE)))
+        return 2
+
+    section, lo, hi = SETTABLE[key]
+    # 数值项做范围校验
+    if lo is not None:
+        try:
+            num = float(val)
+        except ValueError:
+            err(f"{key} 要填数字，你给的是 {val!r}")
+            return 2
+        if num < lo or num > hi:
+            err(f"{key} 必须在 {lo}~{hi} 之间（你给的是 {num}）")
+            return 2
+        val = f"{num:g}"
+    elif val.lower() in ("true", "false", "auto"):
+        val = val.lower()
+
+    settings = _load_settings(args)
+    cfg = Path(args.config) if getattr(args, "config", "") else settings.config_path
+    if not Path(cfg).exists():
+        err(f"找不到配置文件：{cfg}")
+        return 2
+
+    lines = Path(cfg).read_text(encoding="utf-8").splitlines()
+    cur = ""
+    changed = False
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            cur = s[1:-1].strip().lower()
+            continue
+        if cur == section and "=" in s and not s.startswith(";"):
+            k = s.split("=", 1)[0].strip()
+            if k == key:
+                lines[i] = f"{key} = {val}"
+                changed = True
+                break
+    if not changed:
+        # 没找到就追加到该 section 末尾
+        out: list[str] = []
+        cur = ""
+        inserted = False
+        for line in lines:
+            out.append(line)
+            s = line.strip()
+            if s.startswith("[") and s.endswith("]"):
+                cur = s[1:-1].strip().lower()
+            elif cur == section and not inserted and (i := None) is None:
+                pass
+        if not inserted:
+            lines.append(f"{key} = {val}")
+
+    Path(cfg).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ok(f"已写入 {cfg.name}：{key} = {val}")
+    info(f"（在 [{section}] 段；下次启动生效）")
+    return 0
+
+
 def cmd_run(args) -> int:
     from .courses import list_courses, select_courses
     from .runner import run_courses
@@ -163,7 +250,7 @@ def cmd_run(args) -> int:
     if args.jobs:
         settings.jobs = max(1, min(32, args.jobs))
     if args.speed:
-        settings.speed = max(1.0, min(2.0, args.speed))
+        settings.speed = max(0.1, min(100.0, args.speed))
     if args.threshold:
         settings.threshold = max(0.1, min(1.2, args.threshold))
     if args.limit is not None:
@@ -406,8 +493,27 @@ def cmd_status(args) -> int:
                 )
             except Exception as exc:  # noqa: BLE001
                 warn(f"   {e.index:>2}) {e.label} 学习资源读取失败：{exc}")
+        elif e.kind == "hike":
+            # Hike 现在能刷了（串行），顺手把进度也读出来
+            try:
+                from . import hike_patch
+                from .runner import _hike_leaves
+
+                hike_patch.install()
+                hroot = hike_patch.tree(session, e.course_id)
+                hls = _hike_leaves(hroot)
+                hdone = sum(
+                    1 for n in hls
+                    if (n.total_time or 0) > 0
+                    and (n.study_time or 0) >= (n.total_time or 0) * settings.threshold
+                )
+                total_pending += len(hls) - hdone
+                say(f"   {e.index:>2}) {e.label:<34} {len(hls)} 个资源，"
+                    f"待刷 {len(hls) - hdone}，已完成 {hdone}（串行刷）")
+            except Exception as exc:  # noqa: BLE001
+                warn(f"   {e.index:>2}) {e.label} 资源读取失败：{exc}")
         else:
-            say(f"   {e.index:>2}) {e.label:<34} （暂不支持并发播放）")
+            say(f"   {e.index:>2}) {e.label:<34} （这类课暂不支持）")
 
     report = settings.state_dir / "last-run.json"
     if report.exists():
@@ -450,11 +556,11 @@ def cmd_status(args) -> int:
 
     say()
     if total_pending:
-        ok(f"还有 {total_pending} 个视频要刷：zhs-multi.bat run -c all -j {settings.jobs}")
+        ok(f"还有 {total_pending} 个要刷：zhs-multi.bat run -c all -j {settings.jobs}")
         info("一条命令全自动（被 -12 拦住自己点掉再续刷）："
              "zhs-multi.bat daemon -c 1 -j 1 --solve-captcha --every 120")
     else:
-        ok("所有知到视频都已完成")
+        ok("所有课程的进度都满了（知到 + Hike）")
     rule("=")
     return 0
 
@@ -698,6 +804,11 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--cookie-file", default=None, help="从文件导入 Cookie（JSON 或 name=value 文本）")
     lp.set_defaults(func=cmd_login)
 
+    stp = sub.add_parser("set", help="改 config.ini 的一项（如 set speed 4.0）")
+    stp.add_argument("key", help="键名：" + "、".join(sorted(SETTABLE)))
+    stp.add_argument("value", help="新值")
+    stp.set_defaults(func=cmd_set)
+
     ls = sub.add_parser("list", help="列出课程")
     ls.add_argument("--json", action="store_true", help="以 JSON 输出")
     ls.add_argument("--no-login", action="store_true", help="没有 Cookie 时不自动登录")
@@ -706,7 +817,8 @@ def build_parser() -> argparse.ArgumentParser:
     rp = sub.add_parser("run", help="多线程刷视频")
     rp.add_argument("-c", "--courses", default=None, help="课程序号：1 / 1,3 / 2-4 / all（留空=交互选择）")
     rp.add_argument("-j", "--jobs", type=int, default=0, help="并发线程数（默认取 config.ini）")
-    rp.add_argument("-s", "--speed", type=float, default=0.0, help="倍速 1.0-2.0")
+    rp.add_argument("-s", "--speed", type=float, default=0.0,
+                    help="倍速（1 秒真实时间推进几秒视频，0.1-100；默认取 config.ini）")
     rp.add_argument("--threshold", type=float, default=0.0, help="视频完成阈值 0.1-1.2")
     rp.add_argument("-l", "--limit", type=int, default=None, help="总时间上限（分钟，0=不限）")
     rp.add_argument("--dry-run", action="store_true", help="只列任务不动手")
