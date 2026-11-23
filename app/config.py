@@ -42,6 +42,11 @@ DEFAULTS = {
         "max_per_day": "0",
         "device_tag": "zhs",
     },
+    "question_bank": {
+        "enabled": "false",
+        "token": "",
+        "url": "https://tk.enncy.cn/query",
+    },
     "output": {
         "verbose": "false",
         "color": "true",
@@ -89,6 +94,11 @@ class AppSettings:
     night_to: int = 6
     max_per_day: int = 0                # 每天最多刷几条（0 = 不限）
     device_tag: str = "zhs"            # 上报里的设备标识；实测只有 zhs 能被平台解出来
+
+    # [question_bank] 第三方题库（命中就直接提交，不用 LLM）
+    qb_enabled: bool = False
+    qb_token: str = ""
+    qb_url: str = "https://tk.enncy.cn/query"
 
     # [output]
     verbose: bool = False

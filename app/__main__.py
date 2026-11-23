@@ -165,6 +165,8 @@ SETTABLE = {
     "night_off": ("stealth", None, None),
     "max_per_day": ("stealth", 0, 10000),
     "device_tag": ("stealth", None, None),
+    "qb_enabled": ("question_bank", None, None),
+    "qb_token": ("question_bank", None, None),
 }
 
 
@@ -283,6 +285,41 @@ def cmd_run(args) -> int:
         with_homework=args.with_homework or settings.homework_enable,
         auto_unblock=args.auto_unblock,
     )
+
+
+def cmd_homework(args) -> int:
+    """只做章节作业/测验（不刷视频）
+
+        zhs-multi homework -c 1        # 第 1 门课的作业
+        zhs-multi homework -c all      # 全部
+    """
+    from .courses import list_courses, select_courses
+    from .runner import _run_homework
+    from .session_factory import new_session
+
+    settings = _load_settings(args)
+    _setup_logging(settings)
+    cookies = _cookies_or_login(settings, allow_login=not args.no_login)
+    session = new_session(settings, cookies)
+
+    entries = list_courses(session)
+    spec = args.courses if args.courses is not None else settings.course_list
+    selected = select_courses(entries, spec or "all")
+    if not selected:
+        err("没选中课程")
+        return 2
+
+    # 作业域（studentexam-api）要单独走一次 CAS SSO，不然接口 302 到登录页
+    try:
+        session.exam_sso_login()
+        info("作业域 CAS 认证通过")
+    except Exception as exc:  # noqa: BLE001
+        err(f"作业域认证失败：{type(exc).__name__}: {str(exc)[:140]}")
+        info("需要重新扫码登录：zhs-multi.bat login")
+        return 3
+
+    _run_homework(settings, session, selected)
+    return 0
 
 
 def cmd_daemon(args) -> int:
@@ -803,6 +840,11 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--cookie", default=None, help='手动导入 Cookie："name=value; name2=value2"')
     lp.add_argument("--cookie-file", default=None, help="从文件导入 Cookie（JSON 或 name=value 文本）")
     lp.set_defaults(func=cmd_login)
+
+    hw = sub.add_parser("homework", help="只做章节作业/测验（题库优先）")
+    hw.add_argument("-c", "--courses", default=None, help="课程序号：1 / 1,3 / all")
+    hw.add_argument("--no-login", action="store_true", help="没有 Cookie 时不自动登录")
+    hw.set_defaults(func=cmd_homework)
 
     stp = sub.add_parser("set", help="改 config.ini 的一项（如 set speed 4.0）")
     stp.add_argument("key", help="键名：" + "、".join(sorted(SETTABLE)))

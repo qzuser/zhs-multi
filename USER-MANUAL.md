@@ -707,3 +707,5 @@ zhs-multi.bat status               # 显示 66 个资源、待刷多少、平台
 - 想立即失效：网页端退出登录，或删掉 `state\cookies.json`
 
 zhs-multi.bat set speed 4.0        改倍速（也能改 jobs / threshold / rest_every，写回 config.ini 且保留注释）
+
+zhs-multi.bat homework -c 1        只做章节作业/测验（题库优先）

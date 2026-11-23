@@ -32,3 +32,6 @@ tools/_recon/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# zhs 库自己的缓存（题库、登录态等，含真实数据）
+.zhs/

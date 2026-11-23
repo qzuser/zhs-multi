@@ -759,8 +759,16 @@ def _run_homework(settings: AppSettings, session: Any, selected: list[Any]) -> N
     say()
     rule("=")
     info("开始处理章节作业（串行）")
-    if not settings.has_ai_key:
-        warn("未配置 [ai] api_key：作业将退化为随机作答，正确率很低")
+
+    from . import bank_first
+
+    bank = bank_first.client_from_settings(settings)
+    if bank is not None and bank_first.install(bank):
+        ok("题库优先已启用：命中题库的题直接提交，不调 LLM")
+    elif settings.qb_enabled:
+        warn("题库开启了但没 token（config.ini 的 [question_bank] token），退回 LLM/随机")
+    if not settings.has_ai_key and bank is None:
+        warn("既没题库也没 [ai] api_key：作业只能随机作答，正确率很低")
     cfg = build_zhs_config(settings)
     for entry in selected:
         if entry.kind != "zhidao" or not entry.recruit_id:
@@ -770,6 +778,9 @@ def _run_homework(settings: AppSettings, session: Any, selected: list[Any]) -> N
             run_zhidao_homework(session, cfg, str(entry.recruit_id), int(entry.course_id or 0))
         except Exception as exc:  # noqa: BLE001
             err(f"作业处理失败：{entry.label} — {exc}")
+    if bank is not None:
+        info(bank_first.stats_line(bank))
+        bank.close()
     rule("=")
 
 
