@@ -753,35 +753,102 @@ def _print_summary(summary: RunSummary) -> None:
 
 
 def _run_homework(settings: AppSettings, session: Any, selected: list[Any]) -> None:
-    """串行跑作业（作业内部本身是逐题提交，并发没有意义且更危险）"""
-    from zhs.cli.services.homework_service import run_zhidao_homework
+    """做章节作业/测验
+
+    行为受 `[homework] require_all` 控制：
+      true （默认）—— 题库没覆盖**全部**题目就整份跳过，一个字都不提交
+      false        —— 老行为，题库命中的用题库，其余靠缓存排除/随机
+
+    门禁阶段把「题干 → 选项 id」预算好，做题时不再重复查题库（enncy 按次扣额度）。
+    """
+    from zhs.cache.zhidao_cache import ZhidaoHomeworkCache
+    from zhs.zhidao.homework.scanner import HomeworkScanner
+    from zhs.zhidao.homework.worker import HomeworkWorker
+
+    from . import bank_gate, bank_first
 
     say()
     rule("=")
     info("开始处理章节作业（串行）")
 
-    from . import bank_first
-
     bank = bank_first.client_from_settings(settings)
     if bank is not None and bank_first.install(bank):
-        ok("题库优先已启用：命中的题直接提交")
+        ok("题库优先已启用" + ("（要求全题命中，否则整份不交）" if settings.homework_require_all else ""))
+        bank_gate.install_return_guard()
     elif settings.qb_enabled:
-        warn("题库开了但没 token（config.ini 的 [question_bank] token），只能随机作答")
-    if bank is None:
-        warn("没配题库：作业只能随机作答，正确率全看运气")
+        warn("题库开了但没 token（config.ini 或 state/secrets.ini 的 [question_bank] token）")
+    if bank is None and settings.homework_require_all:
+        err("没配题库又要求全题命中 → 这次一份作业都不会提交")
+        return
+
     cfg = build_zhs_config(settings)
+    total_ok = total_skip = total_fail = 0
+
     for entry in selected:
         if entry.kind != "zhidao" or not entry.recruit_id:
             continue
         info(f"  {entry.label}（recruitId={entry.recruit_id}）")
         try:
-            run_zhidao_homework(session, cfg, str(entry.recruit_id), int(entry.course_id or 0))
+            scanner = HomeworkScanner(session, cfg)      # 构造里会做作业域 SSO
+            items = scanner.scan_homework(str(entry.recruit_id), int(entry.course_id or 0))
+            pending = scanner.filter_pending(items)
         except Exception as exc:  # noqa: BLE001
-            err(f"作业处理失败：{entry.label} — {exc}")
+            err(f"扫描作业失败：{entry.label} — {type(exc).__name__}: {str(exc)[:120]}")
+            continue
+
+        if not pending:
+            info("    没有待处理的作业")
+            continue
+        info(f"    待处理 {len(pending)} 个")
+
+        cache = ZhidaoHomeworkCache()
+        worker = HomeworkWorker(session, cfg, cache, llm=None, question_bank=None)
+
+        for item in pending:
+            name = getattr(item, "exam_name", "?")
+            if bank is not None:
+                okc, plan, note = bank_gate.build_plan(
+                    worker, item, str(entry.recruit_id), "625", bank
+                )
+                if not okc:
+                    total_skip += 1
+                    if settings.homework_require_all:
+                        warn(f"    跳过 {name}：{note}（不提交）")
+                        continue
+                    warn(f"    题库只覆盖 {note}，按老策略继续")
+                bank_first.set_plan(plan)
+            else:
+                bank_first.clear_plan()
+
+            try:
+                worker._gate_sources = []          # 每题来源记录，给兜底守卫用
+                score = worker.run_homework(item, str(entry.recruit_id), "625")
+                if getattr(worker, "_gate_skipped", False):
+                    total_skip += 1
+                    warn(f"    跳过 {name}：答题时缺少题库答案，未提交")
+                    worker._gate_skipped = False
+                elif score >= settings.homework_threshold:
+                    total_ok += 1
+                else:
+                    warn(f"    {name} 得分 {score:.1f}%（阈值 {settings.homework_threshold}%）")
+            except Exception as exc:  # noqa: BLE001
+                total_fail += 1
+                err(f"    {name} 处理失败 — {type(exc).__name__}: {str(exc)[:120]}")
+            finally:
+                bank_first.clear_plan()
+
+    say()
+    info(f"作业小结：达标 {total_ok}｜跳过 {total_skip}（题库没覆盖）｜失败 {total_fail}")
     if bank is not None:
-        info(bank_first.stats_line(bank))
+        info(bank_gate_stats(bank))
         bank.close()
     rule("=")
+
+
+def bank_gate_stats(bank: Any) -> str:
+    return (f"题库：命中 {getattr(bank, 'hits', 0)} 次，"
+            f"未命中 {getattr(bank, 'miss', 0)} 次，"
+            f"出错 {getattr(bank, 'errors', 0)} 次")
 
 
 def course_url(rac_id: str) -> str:

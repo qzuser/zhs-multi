@@ -28,6 +28,7 @@ DEFAULTS = {
         "enable": "false",
         "threshold": "100",
         "max_submit": "2",
+        "require_all": "true",
     },
     "stealth": {
         "adaptive": "true",
@@ -78,6 +79,7 @@ class AppSettings:
     homework_enable: bool = False
     homework_threshold: int = 100
     homework_max_submit: int = 2
+    homework_require_all: bool = True   # 题库没覆盖全部题目就整份不提交
 
     # [stealth] 风控应对
     adaptive: bool = True               # 撞 -10 自动压并发 / 拉长间隔
@@ -218,6 +220,7 @@ def load(path: str | Path, project_dir: Path | None = None) -> AppSettings:
         homework_enable=_b(parser["homework"].get("enable", "false")),
         homework_threshold=int(parser["homework"].get("threshold", "100") or 100),
         homework_max_submit=int(parser["homework"].get("max_submit", "2") or 0),
+        homework_require_all=_b(parser["homework"].get("require_all", "true")),
         adaptive=_b(parser["stealth"].get("adaptive", "true")),
         rest_every=int(parser["stealth"].get("rest_every", "6") or 0),
         rest_seconds=parser["stealth"].get("rest_seconds", "15-30").strip(),

@@ -23,6 +23,23 @@ from .answers import BankClient
 _PATCHED = "_zhs_multi_bank_first"
 _TAG = re.compile(r"<[^>]+>")
 
+# 门禁预查好的答案：{题干plain: 选项 id 串}
+_PLAN: dict[str, str] = {}
+
+
+def set_plan(plan: dict[str, str]) -> None:
+    global _PLAN
+    _PLAN = dict(plan or {})
+
+
+def clear_plan() -> None:
+    global _PLAN
+    _PLAN = {}
+
+
+def current_plan() -> dict[str, str]:
+    return dict(_PLAN)
+
 
 def _plain(text: Any) -> str:
     """题干/选项是 HTML，去掉标签再拿去查题库"""
@@ -47,24 +64,42 @@ def install(client: BankClient | None = None) -> bool:
 
     orig = HomeworkWorker._generate_answer_with_source  # type: ignore[attr-defined]
 
-    def patched(self, question, item):  # noqa: ANN001
-        # ---- 题库优先 ----
+    def _remember(self, source: str) -> None:
         try:
-            title = _plain(getattr(question, "name", ""))
+            log = getattr(self, "_gate_sources", None)
+            if log is None:
+                log = []
+                self._gate_sources = log
+            log.append(source)
+        except Exception:  # noqa: BLE001,S110
+            pass
+
+    def patched(self, question, item):  # noqa: ANN001
+        title = _plain(getattr(question, "name", ""))
+        tid = int(getattr(question, "question_type_id", 0) or 0)
+
+        # ---- 1) 门禁预查好的计划表：直接用，不再请求题库 ----
+        if _PLAN and title in _PLAN:
+            _remember("计划")
+            return _PLAN[title], "计划"
+
+        # ---- 2) 没走门禁：现查题库 ----
+        try:
             if title:
-                qtype = map_question_type(int(getattr(question, "question_type_id", 0) or 0))
+                qtype = map_question_type(tid)
                 ans = client.query(title, qtype)
                 if ans is not None:
-                    multi = int(getattr(question, "question_type_id", 0) or 0) == 2
                     val = client.to_option_ids(
-                        ans, list(getattr(question, "question_options", []) or []), multi
+                        ans, list(getattr(question, "question_options", []) or []), tid == 2
                     )
                     if val is not None:
+                        _remember("题库")
                         return val, ("题库AI" if ans.from_ai else "题库")
         except Exception:  # noqa: BLE001,S110
             pass
 
-        # ---- 题库没命中：完全交回 zhs 的老逻辑 ----
+        # ---- 3) 题库没命中：交回 zhs 老逻辑（缓存排除 / 随机）----
+        _remember("其它")
         return orig(self, question, item)
 
     HomeworkWorker._generate_answer_with_source = patched  # type: ignore[method-assign]

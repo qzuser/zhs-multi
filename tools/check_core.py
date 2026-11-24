@@ -822,6 +822,115 @@ def test_stealth_progress() -> None:
         check(q2.count == 3, f"重启后账本还记得（{q2.count}）")
 
 
+def test_answers() -> None:
+    """题库优先：答案 → 选项 id 的映射（离线）"""
+    print("15) 题库答案映射")
+    from types import SimpleNamespace
+
+    from app.answers import BankAnswer, BankClient
+
+    def opts(*pairs):
+        return [SimpleNamespace(id=i, content=c) for i, c in pairs]
+
+    o = opts((101, "A. 正确"), (102, "B. 错误"))
+    check(BankClient.to_option_ids(BankAnswer("101", ["101"], False), o) == 101,
+          "答案=选项 id 直接命中（单选返回 int）")
+    check(BankClient.to_option_ids(BankAnswer("正确", ["正确"], False), o) == 101,
+          "答案文本 == 选项内容")
+    check(BankClient.to_option_ids(BankAnswer("B. 错误", ["B. 错误"], False), o) == 102,
+          "答案包含在选项内容里")
+
+    m = opts((201, "甲"), (202, "乙"), (203, "丙"))
+    got = BankClient.to_option_ids(BankAnswer("甲#丙", ["甲", "丙"], False), m, multi=True)
+    check(got == "201,203", f"多选题拆分成多个选项（{got}）")
+
+    check(BankClient.to_option_ids(BankAnswer("完全无关", ["完全无关"], False), o) is None,
+          "映射不上返回 None")
+    check(BankClient.to_option_ids(BankAnswer("A", ["A"], False), []) is None,
+          "没有选项时返回 None")
+
+    c = BankClient("")
+    check(c.query("随便一道题") is None, "空 token 直接返回 None")
+    c.close()
+
+    from app import bank_first
+
+    check(bank_first.install(None) is False, "没传客户端时装不上补丁")
+    check(bank_first.install(BankClient("")) is False, "空 token 时装不上补丁")
+
+    from app.config import AppSettings
+
+    st = AppSettings()
+    check(st.qb_enabled is False and st.qb_token == "", "题库默认关闭")
+    check(bank_first.client_from_settings(st) is None, "关闭时不建客户端")
+    st2 = AppSettings(qb_enabled=True, qb_token="x")
+    c2 = bank_first.client_from_settings(st2)
+    check(c2 is not None, "开启且有 token 时建客户端")
+    if c2 is not None:
+        c2.close()
+
+
+def test_gate() -> None:
+    """作业门禁：题库没覆盖全部题目就不提交"""
+    print("16) 作业门禁（全覆盖才提交）")
+    from types import SimpleNamespace
+
+    from app import bank_first, bank_gate
+    from app.answers import BankAnswer, BankClient
+
+    check(bank_gate.plain("<p>马克思主义的<b>三个</b>组成部分</p>") == "马克思主义的 三个 组成部分",
+          "题干去 HTML 标签")
+    check(bank_gate.plain("a&nbsp;b") == "a b", "&nbsp; 转空格")
+
+    bank_first.set_plan({"计划里的题": "101"})
+    check(bank_first.current_plan() == {"计划里的题": "101"}, "计划表能读回")
+    bank_first.clear_plan()
+    check(bank_first.current_plan() == {}, "clear_plan 清空")
+
+    class FakeWorker:
+        def __init__(self, questions):
+            self._q = questions
+
+        def _fetch_homework_detail(self, item, rid, sid):
+            return object()
+
+        def _extract_questions(self, detail):
+            return self._q
+
+    def q(name, opts, tid=1):
+        return SimpleNamespace(
+            name=name, question_type_id=tid,
+            question_options=[SimpleNamespace(id=i, content=c) for i, c in opts],
+        )
+
+    qs_ok = [q("<p>实践是检验真理的唯一标准</p>", [(1, "正确"), (2, "错误")], 14)]
+    qs_miss = qs_ok + [q("<p>完全不在题库里的题</p>", [(3, "甲"), (4, "乙")])]
+
+    class FakeBank:
+        token = "x"
+
+        def query(self, title, qtype=""):
+            return BankAnswer("正确", ["正确"], False) if "实践" in title else None
+
+        @staticmethod
+        def to_option_ids(ans, options, multi=False):
+            return BankClient.to_option_ids(ans, options, multi)
+
+    okc, plan, note = bank_gate.build_plan(FakeWorker(qs_ok), object(), "1", "625", FakeBank())
+    check(okc and len(plan) == 1, f"全覆盖 → 允许提交（{note}）")
+
+    okc2, _p2, note2 = bank_gate.build_plan(FakeWorker(qs_miss), object(), "1", "625", FakeBank())
+    check(not okc2, f"有题没答案 → 整份不提交（{note2}）")
+    check("1/2" in note2, f"提示写明缺几题（{note2}）")
+
+    okc3, _p3, note3 = bank_gate.build_plan(FakeWorker([]), object(), "1", "625", FakeBank())
+    check(not okc3, f"没有题目也拦住（{note3}）")
+
+    from app.config import AppSettings
+
+    check(AppSettings().homework_require_all is True, "默认要求全题命中")
+
+
 def main() -> int:
     test_spec()
     test_config()
@@ -837,6 +946,8 @@ def main() -> int:
     test_daemon_wiring()
     test_stagger()
     test_stealth_progress()
+    test_answers()
+    test_gate()
     print()
     if FAILS:
         print(f"[!!] {len(FAILS)} 项未通过：" + "；".join(FAILS))
