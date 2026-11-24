@@ -142,6 +142,46 @@ class AppSettings:
         self.ai_video_threshold = max(1, min(100, int(self.ai_video_threshold)))
 
 
+def _secret(cfg_path: Path, section: str, key: str, fallback: str = "") -> str:
+    """敏感值（token 之类）优先从 state/secrets.ini 取
+
+    config.ini 是仓库文件、会被提交，所以凭据不能写在那儿。
+    这里让 config.ini 留空、值放 state/secrets.ini（.gitignore 已忽略 state/）。
+    """
+    # secrets.ini 优先（凭据不写进要提交的 config.ini）；没配才用 config.ini 的值
+    sec = cfg_path.resolve().parent / "state" / "secrets.ini"
+    if sec.exists():
+        try:
+            cp = configparser.ConfigParser(interpolation=None,
+                                           inline_comment_prefixes=(";", "#"))
+            cp.read(sec, encoding="utf-8")
+            if cp.has_section(section) and cp.has_option(section, key):
+                val = cp[section][key].strip()
+                if val:
+                    return val
+        except Exception:  # noqa: BLE001,S110
+            pass
+    return fallback
+
+
+def save_secret(cfg_path: str | Path, section: str, key: str, value: str) -> Path:
+    """把敏感值写进 state/secrets.ini（自动建目录）"""
+    sec = Path(cfg_path).resolve().parent / "state" / "secrets.ini"
+    sec.parent.mkdir(parents=True, exist_ok=True)
+    cp = configparser.ConfigParser(interpolation=None)
+    if sec.exists():
+        try:
+            cp.read(sec, encoding="utf-8")
+        except Exception:  # noqa: BLE001,S110
+            pass
+    if not cp.has_section(section):
+        cp.add_section(section)
+    cp[section][key] = value or ""
+    with sec.open("w", encoding="utf-8") as fh:
+        cp.write(fh)
+    return sec
+
+
 def load(path: str | Path, project_dir: Path | None = None) -> AppSettings:
     """读取 config.ini，缺段缺键都用默认值补齐"""
     cfg_path = Path(path)
@@ -186,6 +226,14 @@ def load(path: str | Path, project_dir: Path | None = None) -> AppSettings:
         night_to=int(parser["stealth"].get("night_to", "6") or 0),
         max_per_day=int(parser["stealth"].get("max_per_day", "0") or 0),
         device_tag=(parser["stealth"].get("device_tag", "zhs") or "zhs").strip(),
+        # 题库：开关和 token 都允许放在 state/secrets.ini（config.ini 是要提交的，不放凭据）
+        qb_enabled=_b(_secret(cfg_path, "question_bank", "enabled",
+                              parser["question_bank"].get("enabled", "false"))),
+        qb_token=_secret(cfg_path, "question_bank", "token",
+                         parser["question_bank"].get("token", "").strip()),
+        qb_url=(_secret(cfg_path, "question_bank", "url", "")
+                or parser["question_bank"].get("url", "https://tk.enncy.cn/query")).strip()
+        or "https://tk.enncy.cn/query",
         verbose=_b(parser["output"].get("verbose", "false")),
         color=_b(parser["output"].get("color", "true")),
         project_dir=project_dir or cfg_path.resolve().parent,
