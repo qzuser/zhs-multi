@@ -245,9 +245,6 @@ delay = 0.6            ; 任务间隔（秒），防风控
 dashboard = true       ; 单行总览进度
 
 [ai]
-api_key =              ; 不做作业可以不填
-base_url = https://api.deepseek.com/v1
-model = deepseek-chat
 
 [homework]
 enable = false         ; 刷完视频接着做作业
@@ -369,7 +366,7 @@ py -3.11 -m playwright install chromium
 
 ## 与上游 zhs 的关系
 
-协议（AES 加密参数、`ev` 编码、CAS 换票、题库/LLM 答题）全部复用已安装的 `zhs` 包，不改其源码；
+协议（AES 加密参数、`ev` 编码、CAS 换票、题库答题）全部复用已安装的 `zhs` 包，不改其源码；
 本项目只做三件事：**扫码登录**、**课程选择**、**多线程调度**。
 因此 `zhs` 升级后本工具同样受益；作业/考试仍可继续用 `zhs` 原命令。
 

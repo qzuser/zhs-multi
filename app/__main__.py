@@ -781,7 +781,6 @@ def cmd_doctor(args) -> int:
     info(f"线程数      : {settings.jobs}（错峰 {settings.stagger:g}s 启动）")
     info(f"倍速/阈值   : {settings.speed} / {settings.threshold}")
     info(f"时间上限    : {settings.limit or '不限'} 分钟")
-    info(f"AI Key      : {'已配置 ' + settings.ai_model if settings.has_ai_key else '未配置（作业会随机作答）'}")
     info(
         f"智慧课程    : 选学资料{'刷' if settings.ai_learn_optional else '跳过'}"
         f" / 视频阈值 {settings.ai_video_threshold}"

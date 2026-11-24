@@ -21,9 +21,6 @@ DEFAULTS = {
         "unblock_wait": "900",
     },
     "ai": {
-        "api_key": "",
-        "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
         "learn_optional": "true",
         "video_threshold": "90",
     },
@@ -74,9 +71,6 @@ class AppSettings:
     unblock_wait: int = 900
 
     # [ai]
-    ai_api_key: str = ""
-    ai_base_url: str = "https://api.deepseek.com/v1"
-    ai_model: str = "deepseek-chat"
     ai_learn_optional: bool = True      # 是否连"选学"资料一起刷
     ai_video_threshold: int = 90        # AI 课程视频完成阈值（0-100）
 
@@ -147,10 +141,6 @@ class AppSettings:
         self.homework_max_submit = max(0, int(self.homework_max_submit))
         self.ai_video_threshold = max(1, min(100, int(self.ai_video_threshold)))
 
-    @property
-    def has_ai_key(self) -> bool:
-        return bool(self.ai_api_key.strip())
-
 
 def load(path: str | Path, project_dir: Path | None = None) -> AppSettings:
     """读取 config.ini，缺段缺键都用默认值补齐"""
@@ -183,9 +173,6 @@ def load(path: str | Path, project_dir: Path | None = None) -> AppSettings:
         force=_b(c.get("force", "false")),
         dashboard=_b(c.get("dashboard", "true")),
         unblock_wait=int(c.get("unblock_wait", "900") or 900),
-        ai_api_key=parser["ai"].get("api_key", "").strip(),
-        ai_base_url=parser["ai"].get("base_url", DEFAULTS["ai"]["base_url"]).strip(),
-        ai_model=parser["ai"].get("model", DEFAULTS["ai"]["model"]).strip(),
         ai_learn_optional=_b(parser["ai"].get("learn_optional", "true")),
         ai_video_threshold=int(parser["ai"].get("video_threshold", "90") or 90),
         homework_enable=_b(parser["homework"].get("enable", "false")),

@@ -764,11 +764,11 @@ def _run_homework(settings: AppSettings, session: Any, selected: list[Any]) -> N
 
     bank = bank_first.client_from_settings(settings)
     if bank is not None and bank_first.install(bank):
-        ok("题库优先已启用：命中题库的题直接提交，不调 LLM")
+        ok("题库优先已启用：命中的题直接提交")
     elif settings.qb_enabled:
-        warn("题库开启了但没 token（config.ini 的 [question_bank] token），退回 LLM/随机")
-    if not settings.has_ai_key and bank is None:
-        warn("既没题库也没 [ai] api_key：作业只能随机作答，正确率很低")
+        warn("题库开了但没 token（config.ini 的 [question_bank] token），只能随机作答")
+    if bank is None:
+        warn("没配题库：作业只能随机作答，正确率全看运气")
     cfg = build_zhs_config(settings)
     for entry in selected:
         if entry.kind != "zhidao" or not entry.recruit_id:

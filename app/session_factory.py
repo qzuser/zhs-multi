@@ -25,11 +25,6 @@ def build_zhs_config(settings: AppSettings) -> AppConfig:
     cfg.homework.threshold = settings.homework_threshold
     cfg.homework.max_submit = settings.homework_max_submit
     cfg.display.log_level = "DEBUG" if settings.verbose else "INFO"
-    if settings.has_ai_key:
-        cfg.ai.use_builtin_ai = False
-        cfg.ai.api_key = settings.ai_api_key
-        cfg.ai.base_url = settings.ai_base_url
-        cfg.ai.model = settings.ai_model
     return cfg
 
 
